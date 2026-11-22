@@ -34,10 +34,11 @@ class Turn:
     meta: dict = field(default_factory=dict)
     parse: Callable[[str], StructuredReply] | None = None
     private_history: tuple[tuple[str, str, str], ...] | None = None
+    system_prompt_override: str | None = None
 
     @property
     def system_prompt(self) -> str:
-        return f"你是{self.member.name}，角色是{self.member.role}。\n{self.member.system_prompt}"
+        return self.system_prompt_override or f"你是{self.member.name}，角色是{self.member.role}。\n{self.member.system_prompt}"
 
     @property
     def instruction(self) -> str:

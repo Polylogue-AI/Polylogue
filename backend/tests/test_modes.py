@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections import Counter
 from decimal import Decimal
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -71,14 +72,17 @@ def test_pipeline_executes_concurrently_and_caps_rework():
         if "输出任务列表" in request:
             return {"tasks": ["核对来源", "确定安排"]}
         if "完成这项任务" in request:
-            return "补齐初稿及证据。"
+            return "来源核对专属正文。" if "核对来源" in request else "活动安排专属正文。"
         if "给出审查结论" in request:
-            return {"verdict": "needs_fix" if "任务：核对来源" in request else "approved", "comment": "核对证据。"}
+            if "任务：核对来源" in request:
+                return {"verdict": "needs_fix", "comment": "来源证据专属退回意见。"}
+            return {"verdict": "approved", "comment": "活动安排可执行。"}
         return "保留通过的安排，来源待补。"
 
     fake = ScriptedLLM(reply, delay=0.08)
     with logged_in(fake) as client:
         login(client)
+        reviewer = next(member for member in client.get("/api/members").json() if member["id"] == "ai_deepseek")
         url = create_room(client, mode="pipe", ai_member_ids=["ai_claude", "ai_gpt", "ai_gemini", "ai_deepseek"])
         with client.websocket_connect(url) as socket:
             snapshot(socket)
@@ -98,6 +102,76 @@ def test_pipeline_executes_concurrently_and_caps_rework():
         verdicts = [item["meta"]["verdict"] for item in frames
                     if item["type"] == "message_end" and "verdict" in item["meta"]]
         assert verdicts == ["needs_fix", "needs_fix", "approved"]
+
+    source_attempts = []
+    review_prompts = []
+    for _, messages in fake.calls:
+        request = messages[-1]["content"]
+        contents = "\n".join(item["content"] for item in messages)
+        if request.startswith("现在轮到你") and "完成这项任务：核对来源" in request:
+            source_attempts.append(contents)
+            assert "任务计划" in contents and "活动安排专属正文" not in contents
+        if "给出审查结论" in request:
+            review_prompts.append(messages)
+            assert "只有任务未完成、存在事实错误或方案无法执行时" in request
+            assert "可以改进的细节写在 comment 中，结论给 approved" in request
+            assert reviewer["system_prompt"] not in messages[0]["content"]
+            assert ("来源核对专属正文" in contents) == ("任务：核对来源" in request)
+            assert ("活动安排专属正文" in contents) == ("任务：确定安排" in request)
+            assert "来源证据专属退回意见" not in contents
+    assert len(source_attempts) == 2 and len(review_prompts) == 3
+    assert "来源核对专属正文" not in source_attempts[0]
+    assert "来源核对专属正文" in source_attempts[1] and "来源证据专属退回意见" in source_attempts[1]
+
+
+def test_pipeline_caps_plan_and_serializes_each_executor():
+    attempts = 0
+    active = Counter()
+    peaks = Counter()
+    total_peak = 0
+
+    class TrackingLLM(ScriptedLLM):
+        async def stream_chat(self, model, messages, temperature, max_tokens):
+            if "完成这项任务" not in messages[-1]["content"]:
+                return await super().stream_chat(model, messages, temperature, max_tokens)
+            nonlocal total_peak
+            active[model] += 1
+            peaks[model] = max(peaks[model], active[model])
+            total_peak = max(total_peak, sum(active.values()))
+
+            async def iterate(result):
+                try:
+                    yield "可执行的稿件。"
+                    await asyncio.sleep(0.03)
+                finally:
+                    active[model] -= 1
+                    result.usage = Usage(1, 1, Decimal("0.0123"))
+
+            return ChatStream(iterate)
+
+    def reply(_model, messages):
+        nonlocal attempts
+        request = messages[-1]["content"]
+        if "输出任务列表" in request:
+            assert "最多 5 项" in request
+            attempts += 1
+            return {"tasks": [f"任务 {i}" for i in range(8 if attempts == 1 else 5)]}
+        if "给出审查结论" in request:
+            return {"verdict": "approved", "comment": "通过。"}
+        return "汇总。"
+
+    with logged_in(TrackingLLM(reply, delay=0)) as client:
+        login(client)
+        url = create_room(client, mode="pipe", ai_member_ids=["ai_claude", "ai_gpt", "ai_gemini", "ai_deepseek"])
+        with client.websocket_connect(url) as socket:
+            snapshot(socket)
+            socket.send_json({"type": "start"})
+            state, _ = finish(socket)
+
+    assert attempts == 2
+    assert sum(task["title"].startswith("任务 ") for task in state["mode_state"]["tasks"]) == 5
+    assert len(peaks) == 2 and set(peaks.values()) == {1}
+    assert total_peak == 2
 
 
 def test_crosscheck_anonymizes_peer_answers_and_persists_steer():
@@ -199,7 +273,9 @@ def test_parallel_snapshot_and_interrupt_keep_both_partials():
                 assert all(item["interrupted"] and item["content"] == "首段内容" for item in ended)
 
 
-def test_stream_failure_keeps_only_visible_partial_and_retries():
+def test_stream_failure_keeps_only_visible_partial_and_retries(monkeypatch, caplog):
+    key = "test-model/key+with symbols"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key)
     class BreakingLLM(ScriptedLLM):
         async def stream_chat(self, model, messages, temperature, max_tokens):
             if not self.calls:
@@ -208,7 +284,7 @@ def test_stream_failure_keeps_only_visible_partial_and_retries():
                 async def iterate(result):
                     yield "已输出的一段"
                     result.usage = Usage(1, 1, Decimal("0.0123"))
-                    raise RuntimeError("流中故障")
+                    raise RuntimeError(f"流中故障：{key}，重试 URL 中的 Key：{quote(key, safe='')}")
 
                 return ChatStream(iterate)
             return await super().stream_chat(model, messages, temperature, max_tokens)
@@ -224,6 +300,8 @@ def test_stream_failure_keeps_only_visible_partial_and_retries():
         assert starts[0]["author_id"] == starts[1]["author_id"] == "ai_claude"
         first_end = next(item for item in frames if item["type"] == "message_end")
         assert first_end["content"] == "已输出的一段" and first_end["interrupted"]
+    assert "anthropic/claude-haiku-5-5" in caplog.text and "RuntimeError" in caplog.text
+    assert "流中故障：[已隐藏]" in caplog.text and key not in caplog.text and quote(key, safe="") not in caplog.text
 
 
 class InterruptibleLLM(ScriptedLLM):

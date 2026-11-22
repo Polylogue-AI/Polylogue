@@ -7,23 +7,12 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .llm import FakeLLM, LiteLLM, anthropic_endpoint
+from .llm import FakeLLM, LiteLLM, anthropic_endpoint, model_error_detail
 from .modes.roundtable import Member, ModelCallError, Roundtable, Speech, total_cost
 
 
 class ConfigurationError(Exception):
     pass
-
-
-def _model_error_message(exc: ModelCallError) -> str:
-    detail = str(exc.cause)
-    secrets = {
-        value for name, value in os.environ.items()
-        if value and name.upper().endswith(("_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_SECRET_ACCESS_KEY"))
-    }
-    for secret in sorted(secrets, key=len, reverse=True):
-        detail = detail.replace(secret, "[已隐藏]")
-    return f"模型调用失败：{exc}。{detail}"
 
 
 async def run(topic: str, *, fake: bool) -> None:
@@ -88,7 +77,7 @@ def main() -> int:
         print("依赖加载失败，请检查是否已安装项目依赖。", file=sys.stderr)
         return 1
     except ModelCallError as exc:
-        print(_model_error_message(exc), file=sys.stderr)
+        print(f"模型调用失败：{exc}。{model_error_detail(exc.cause)}", file=sys.stderr)
         return 1
     return 0
 

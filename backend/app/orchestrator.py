@@ -1,10 +1,11 @@
 import asyncio
 import logging
+from collections import defaultdict
 from contextlib import aclosing
 from dataclasses import dataclass, field
 
 from .context import compression_prompt, estimate_tokens
-from .llm import Usage
+from .llm import Usage, model_error_detail
 from .modes.base import StructuredReply, Turn, build_prompt
 from .modes.roundtable import ModelCallError, Speech
 
@@ -109,11 +110,15 @@ class RoomFlow:
 
     def prompt(self, turn, pending, *, history=None):
         room = self.room
+        if turn.private_history is not None:
+            history, summary = turn.private_history, ""
+        else:
+            summary = room.context_summary()
         if history is None:
             history = room.history(key for key, _ in pending)
         return build_prompt(
             turn, room.record["topic"], history,
-            pending=[text for _, text in pending], directions=room.directions(), summary=room.context_summary(),
+            pending=[text for _, text in pending], directions=room.directions(), summary=summary,
         )
 
     def count(self, model, messages):
@@ -200,9 +205,14 @@ class RoomFlow:
                 if reason == "interrupt" and restart_on_interrupt:
                     continue
                 return None
-            except Exception:
+            except Exception as exc:
                 room.end_message(member_id, message, output, interrupted=True)
                 failures += 1
+                logger.warning(
+                    "房间 %s 成员 %s 模型 %s 任务 %s 第 %s 次调用失败（%s）：%s",
+                    room.id, member_id, turn.member.model, turn.meta.get("task_id", "-"), failures,
+                    type(exc).__name__, " ".join(model_error_detail(exc).splitlines()),
+                )
                 if failures == 2 and visible:
                     self.failures += 1
                     room.add_message(None, "system", f"{turn.member.name} 调用失败，已跳过")
@@ -236,7 +246,10 @@ class RoomFlow:
         self.check_budget()
         pending.extend(room.take_pending())
         # A restarted parallel turn uses the same discussion history as its original attempt.
-        history = room.history(key for key, _ in pending) if concurrent else None
+        history = room.history(key for key, _ in pending) if concurrent and any(
+            turn.private_history is None for turn in turns
+        ) else None
+        member_locks = defaultdict(asyncio.Lock)
 
         first = turns[0]
         room.update(round=first.round,
@@ -245,8 +258,6 @@ class RoomFlow:
                     next_speaker_id=turns[1].member.id if len(turns) > 1 else next_id)
 
         async def play_one(index, turn):
-            if started is not None:
-                started(index)
             interjections = list(pending) if index == 0 else []
 
             def make_prompt():
@@ -254,10 +265,14 @@ class RoomFlow:
                     interjections.extend(room.take_pending())
                 return self.prompt(turn, interjections, history=history)
 
-            result = await self.call(turn, make_prompt, restart_on_interrupt=concurrent)
-            if completed is not None:
-                completed(index, result)
-            return result
+            async with member_locks[turn.member.id]:
+                await room.ready.wait()
+                if started is not None:
+                    started(index)
+                result = await self.call(turn, make_prompt, restart_on_interrupt=concurrent)
+                if completed is not None:
+                    completed(index, result)
+                return result
 
         if len(turns) == 1:
             results = [await play_one(0, first)]

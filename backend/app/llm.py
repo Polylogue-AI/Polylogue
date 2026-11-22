@@ -6,9 +6,21 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from os import getenv
+from os import environ, getenv
 from typing import Protocol, TypedDict
-from urllib.parse import urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
+
+
+def model_error_detail(error: Exception) -> str:
+    detail = str(error)
+    secrets = {
+        encoded for name, value in environ.items()
+        if value and name.upper().endswith(("_API_KEY", "_API_TOKEN", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_SECRET_ACCESS_KEY"))
+        for encoded in (value, quote(value, safe=""), quote_plus(value))
+    }
+    for secret in sorted(secrets, key=len, reverse=True):
+        detail = detail.replace(secret, "[已隐藏]")
+    return detail
 
 
 def anthropic_endpoint() -> str:
