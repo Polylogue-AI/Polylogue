@@ -72,3 +72,35 @@ async def test_usage_error_does_not_mask_stream_cancellation(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await anext(stream)
     assert stream.usage == Usage(2, 1, None)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [
+    "anthropic/claude-haiku-5-5",
+    "anthropic/claude-opus-5-5-20261101",
+    "openai/gpt-5.1-mini",
+    "openai/o3-mini",
+])
+async def test_litellm_omits_temperature_for_unsupported_models(monkeypatch, model):
+    monkeypatch.setenv("LITELLM_OFFLINE_MODE", "true")
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    import litellm
+
+    async def mock_completion(**kwargs):
+        assert kwargs["model"] == model
+        assert "temperature" not in kwargs
+        assert kwargs["drop_params"] is True
+
+        async def chunks():
+            yield litellm.ModelResponseStream(
+                choices=[{"index": 0, "delta": {"content": "OK"}}],
+            )
+
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", mock_completion)
+    stream = await LiteLLM(Decimal("7.2")).stream_chat(
+        model, [{"role": "user", "content": "test"}], 0.65, 450,
+    )
+    assert [part async for part in stream] == ["OK"]

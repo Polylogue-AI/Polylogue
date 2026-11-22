@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,6 +18,7 @@ class Settings:
     usd_cny_rate: Decimal = Decimal("7.2")
     secure_cookie: bool = False
     monthly_user_limit: float | None = None
+    extra_models: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls):
@@ -32,6 +33,12 @@ class Settings:
         monthly_user_limit = float(money(user_limit)) if user_limit else None
         if monthly_user_limit is not None and monthly_user_limit < 0:
             raise ValueError("DEFAULT_MONTHLY_LIMIT_CNY 必须是非负金额")
+        extra_models = {}
+        for entry in os.getenv("EXTRA_MODELS", "").split(","):
+            model, _, label = entry.partition("=")
+            model = model.strip()
+            if model:
+                extra_models[model] = label.strip() or model.split("/", 1)[-1]
         return cls(
             database=os.getenv("DATABASE_PATH", "roundtable.db"),
             admin_code=normalize_invite(code), fake=mode == "fake",
@@ -39,4 +46,5 @@ class Settings:
             usd_cny_rate=Decimal(os.getenv("USD_CNY_RATE", "7.2")),
             secure_cookie=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",
             monthly_user_limit=monthly_user_limit,
+            extra_models=extra_models,
         )

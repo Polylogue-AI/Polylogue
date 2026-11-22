@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from .auth import (COOKIE, SESSION_SECONDS, ApiError, admin_user, create_invite,
                    current_user, log_in, normalize_invite, session_hash)
 from .db import money, new_id, now
+from .llm import supports_temperature
 from .room import Room, initial_state
 from .schemas import InviteInput, Login, MemberInput, MemberPatch, RoomInput
 
@@ -108,16 +109,18 @@ async def users(request: Request):
 @api.get("/models", dependencies=[Depends(current_user)])
 async def models(request: Request):
     state = request.app.state
-    catalog = dict(MODEL_LABELS)
-    catalog.update({item["model"]: catalog.get(item["model"], item["model"].split("/", 1)[-1])
-                    for item in state.db.list("members")})
+    catalog = {**MODEL_LABELS, **state.settings.extra_models}
+    for member in state.db.list("members"):
+        model = member["model"]
+        catalog.setdefault(model, model.split("/", 1)[-1])
     options = []
     providers = {}
     for model, label in catalog.items():
         provider = model.partition("/")[0]
         if provider not in providers:
             providers[provider] = state.settings.fake or state.llm.provider_available(model, provider)
-        options.append(dict(id=model, label=label, provider=provider, available=providers[provider]))
+        options.append(dict(id=model, label=label, provider=provider, available=providers[provider],
+                            supports_temperature=supports_temperature(model)))
     return options
 
 

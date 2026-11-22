@@ -475,3 +475,46 @@ def test_real_catalog_reports_provider_check_and_requires_configured_key(monkeyp
         options = {item["id"]: item["available"] for item in client.get("/api/models").json()}
     assert options["anthropic/claude-sonnet-5-5"]
     assert not options["gemini/gemini-3.5-flash-lite"] and not options["openai/gpt-5-mini"]
+
+
+
+def test_v05_catalog_merges_extra_and_manually_entered_models(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LLM_MODE", "fake")
+    monkeypatch.setenv("ADMIN_INVITE_CODE", "TABLE2")
+    monkeypatch.setenv("DATABASE_PATH", ":memory:")
+    monkeypatch.setenv("EXTRA_MODELS", (
+        " openai/gpt-6.1-sol = GPT-6.1 Sol ,ollama/qwen3:8b,"
+        " deepseek/deepseek-flash=Custom DeepSeek,openai/o4-mini= "
+    ))
+    with TestClient(create_app(llm=FakeLLM())) as client:
+        login(client)
+        response = client.get("/api/models")
+        assert response.is_success
+        options = response.json()
+        by_id = {item["id"]: item for item in options}
+        assert len(by_id) == len(options)
+        assert by_id["openai/gpt-6.1-sol"]["label"] == "GPT-6.1 Sol"
+        assert by_id["openai/gpt-6.1-sol"]["supports_temperature"] is True
+        assert by_id["ollama/qwen3:8b"]["label"] == "qwen3:8b"
+        assert by_id["openai/o4-mini"]["label"] == "o4-mini"
+        assert by_id["deepseek/deepseek-flash"]["label"] == "Custom DeepSeek"
+        assert by_id["deepseek/deepseek-flash"]["supports_temperature"] is True
+        for model in (
+            "anthropic/claude-haiku-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5",
+            "openai/gpt-5", "openai/gpt-5-mini", "openai/gpt-5-nano", "openai/o4-mini",
+        ):
+            assert by_id[model]["supports_temperature"] is False
+
+        manual_model = "openai/relay-only-model"
+        assert manual_model not in by_id
+        created = client.post("/api/members", json={
+            "name": "Relay", "short": "R", "color": "#14996F", "model": manual_model,
+            "role": "", "system_prompt": "", "temperature": 0.65,
+            "max_chars": None, "monthly_budget_cny": None, "can_mention": False,
+        })
+        assert created.is_success
+        member = created.json()
+        assert member["model"] == manual_model
+        updated = client.patch(f"/api/members/{member['id']}", json={"model": "anthropic/claude-haiku-5-5"})
+        assert updated.is_success and updated.json()["temperature"] == 0.65

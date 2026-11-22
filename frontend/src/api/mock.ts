@@ -21,15 +21,15 @@ const users: User[] = [
 ]
 
 const models: ModelOption[] = [
-  { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', available: true },
-  { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', available: true },
-  { id: 'anthropic/claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'anthropic', available: true },
-  { id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', available: true },
-  { id: 'openai/gpt-5-mini', label: 'GPT-5 mini', provider: 'openai', available: true },
-  { id: 'gemini/gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'gemini', available: false },
-  { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', provider: 'deepseek', available: true },
-  { id: 'dashscope/qwen-max', label: 'Qwen Max', provider: 'dashscope', available: true },
-  { id: 'ollama/llama3.1:8b', label: 'Llama 3.1 8B（本地）', provider: 'ollama', available: true },
+  { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', available: true, supports_temperature: false },
+  { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', available: true, supports_temperature: false },
+  { id: 'anthropic/claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'anthropic', available: true, supports_temperature: false },
+  { id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', available: true, supports_temperature: false },
+  { id: 'openai/gpt-5-mini', label: 'GPT-5 mini', provider: 'openai', available: true, supports_temperature: false },
+  { id: 'gemini/gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'gemini', available: false, supports_temperature: true },
+  { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', provider: 'deepseek', available: true, supports_temperature: true },
+  { id: 'dashscope/qwen-max', label: 'Qwen Max', provider: 'dashscope', available: true, supports_temperature: true },
+  { id: 'ollama/llama3.1:8b', label: 'Llama 3.1 8B（本地）', provider: 'ollama', available: true, supports_temperature: true },
 ]
 
 const ANTI_ECHO = '必须指出至少一个前面的人没有提到的问题。'

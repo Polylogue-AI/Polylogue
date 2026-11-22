@@ -1,4 +1,4 @@
-// 与 docs/03-接口契约.md v0.4 逐字段对应。两者冲突时以契约为准。
+// 与 docs/03-接口契约.md v0.5 逐字段对应。两者冲突时以契约为准。
 
 export interface Invite {
   code: string
@@ -40,6 +40,7 @@ export interface ModelOption {
   label: string
   provider: string
   available: boolean
+  supports_temperature: boolean  // false 时成员页禁用温度滑杆（契约 v0.5）
 }
 
 export type Duty =

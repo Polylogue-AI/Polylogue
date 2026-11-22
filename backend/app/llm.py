@@ -11,6 +11,15 @@ from typing import Protocol, TypedDict
 from urllib.parse import quote, quote_plus, urlsplit
 
 
+def supports_temperature(model: str) -> bool:
+    provider, _, name = model.lower().partition("/")
+    if provider == "anthropic":
+        return re.match(r"claude-[a-z]+-5-5(?:-|$)", name) is None
+    if provider == "openai":
+        return not (name.startswith("gpt-5") or re.match(r"o[0-9]+(?:-|$)", name))
+    return True
+
+
 def model_error_detail(error: Exception) -> str:
     detail = str(error)
     secrets = {
@@ -133,6 +142,8 @@ class LiteLLM:
 
         async def iterate(result: ChatStream) -> AsyncGenerator[str, None]:
             options = {"max_tokens": max_tokens} if max_tokens is not None else {}
+            if supports_temperature(model):
+                options["temperature"] = temperature
             if model == "deepseek/deepseek-flash":
                 # Use the provider's direct-answer mode for this model.
                 options["thinking"] = {"type": "disabled"}
@@ -140,7 +151,7 @@ class LiteLLM:
             parts: list[str] = []
             try:
                 response = await litellm.acompletion(
-                    model=model, messages=messages, temperature=temperature,
+                    model=model, messages=messages,
                     stream=True, stream_options={"include_usage": True}, drop_params=True, **options,
                 )
             except Exception:

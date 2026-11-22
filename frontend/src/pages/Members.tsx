@@ -16,6 +16,7 @@ const PRESETS: Record<string, string> = {
   审查者: '你是审查者。逐条核对事实、引用和逻辑，只指出问题和修改建议，不重写全文。',
   汇总者: '你是汇总者。整理讨论中的共识、分歧和下一步行动，不加入自己的新观点。',
 }
+const CUSTOM = '__custom__'
 const COLORS = ['#C9842F', '#14996F', '#3C78F0', '#36458F', '#8659E8', '#3A3A3E', '#D6453D', '#0E8A9A']
 
 export function MembersPage() {
@@ -25,6 +26,7 @@ export function MembersPage() {
   const [cur, setCur] = useState<string | null>(null)
   const [form, setForm] = useState<AiMemberInput | null>(null)
   const [busy, setBusy] = useState(false)
+  const [custom, setCustom] = useState(false)
 
   useEffect(() => { api.models().then(setModels).catch(() => {}) }, [])
   useEffect(() => { if (!cur && members.length) setCur(members[0].id) }, [members, cur])
@@ -33,6 +35,7 @@ export function MembersPage() {
     if (!m) return setForm(null)
     const { id: _id, month_cost_cny: _c, ...rest } = m
     setForm(rest)
+    setCustom(false)
   }, [m])
 
   const set = <K extends keyof AiMemberInput>(k: K, v: AiMemberInput[K]) => setForm((f) => (f ? { ...f, [k]: v } : f))
@@ -40,9 +43,10 @@ export function MembersPage() {
   async function save() {
     if (!m || !form) return
     if (!form.name.trim()) return toast('名字不能为空')
+    if (!/^[\w.-]+\/\S+$/.test(form.model.trim())) return toast('模型名的格式是"服务商/模型名"，例如 openai/gpt-5')
     setBusy(true)
     try {
-      await api.updateMember(m.id, { ...form, name: form.name.trim(), short: form.short.trim() || form.name.trim().slice(0, 2) })
+      await api.updateMember(m.id, { ...form, model: form.model.trim(), name: form.name.trim(), short: form.short.trim() || form.name.trim().slice(0, 2) })
       await refresh()
       toast(`${form.name} 的设置已保存`)
     } catch (e) { toast((e as Error).message) } finally { setBusy(false) }
@@ -66,6 +70,10 @@ export function MembersPage() {
   }
 
   const model = models.find((x) => x.id === form?.model)
+  // 不在列表里的模型（手动输入的）也按"手动输入"显示
+  const manual = custom || (!!form && !!form.model && !model)
+  // 后端没给这个字段时按支持处理
+  const noTemp = model?.supports_temperature === false
   return (
     <section className="view">
       <div className="page">
@@ -103,10 +111,22 @@ export function MembersPage() {
                   <div className="field"><label htmlFor="f-short">头像文字（1–2 个字）</label><input className="input" id="f-short" maxLength={2} value={form.short} onChange={(e) => set('short', e.target.value)} /></div>
                   <div className="field">
                     <label htmlFor="f-model">模型</label>
-                    <select className="select" id="f-model" value={form.model} onChange={(e) => set('model', e.target.value)}>
-                      {!models.some((x) => x.id === form.model) && <option value={form.model}>{form.model || '请选择'}</option>}
+                    <select className="select" id="f-model" value={manual ? CUSTOM : form.model}
+                      onChange={(e) => {
+                        if (e.target.value === CUSTOM) { setCustom(true); if (model) set('model', '') }
+                        else { setCustom(false); set('model', e.target.value) }
+                      }}>
+                      {!form.model && !manual && <option value="">请选择</option>}
                       {models.map((x) => <option key={x.id} value={x.id}>{x.label}{x.available ? '' : '（Key 不可用）'}</option>)}
+                      <option value={CUSTOM}>手动输入模型名…</option>
                     </select>
+                    {manual && (
+                      <>
+                        <input className="input" aria-label="模型名" placeholder="例如 openai/gpt-6.1-sol" style={{ marginTop: 6 }}
+                          value={form.model} onChange={(e) => set('model', e.target.value)} autoFocus={custom} />
+                        <span className="faint" style={{ fontSize: 12 }}>写法和 LiteLLM 一致："服务商/模型名"。对应服务商的 Key 要先配置在 backend/.env 里</span>
+                      </>
+                    )}
                     {model && !model.available && <span className="error-text" style={{ fontSize: 12 }}>这个服务商的 Key 没配置或最近检测失败</span>}
                   </div>
                   <div className="field">
@@ -130,10 +150,11 @@ export function MembersPage() {
                   <div className="field"><label htmlFor="f-role">角色名（显示在名字旁边）</label><input className="input" id="f-role" value={form.role} onChange={(e) => set('role', e.target.value)} /></div>
                   <div className="field">
                     <label htmlFor="f-temp">温度：越高越发散</label>
-                    <div className="range-row">
-                      <input type="range" id="f-temp" min={0} max={1} step={0.1} value={form.temperature} style={{ ['--p' as string]: `${form.temperature * 100}%` }} onChange={(e) => set('temperature', Number(e.target.value))} />
+                    <div className="range-row" style={noTemp ? { opacity: 0.45 } : undefined}>
+                      <input type="range" id="f-temp" disabled={noTemp} min={0} max={1} step={0.1} value={form.temperature} style={{ ['--p' as string]: `${form.temperature * 100}%` }} onChange={(e) => set('temperature', Number(e.target.value))} />
                       <span className="range-val num">{form.temperature.toFixed(1)}</span>
                     </div>
+                    {noTemp && <span className="faint" style={{ fontSize: 12 }}>这个模型不支持调温度，设置不会生效</span>}
                   </div>
                   <div className="field">
                     <label htmlFor="f-budget">每月预算上限（元，留空表示不限）</label>
