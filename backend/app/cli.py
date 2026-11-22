@@ -7,7 +7,7 @@ import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from .llm import FakeLLM, LiteLLM
+from .llm import FakeLLM, LiteLLM, anthropic_endpoint
 from .modes.roundtable import Member, ModelCallError, Roundtable, Speech, total_cost
 
 
@@ -43,7 +43,7 @@ async def run(topic: str, *, fake: bool) -> None:
     members = [
         Member("ai_claude", "Claude", os.getenv("ROUNDTABLE_ANTHROPIC_MODEL", "anthropic/claude-haiku-5-5"),
                "方案设计", "提出具体方案和可执行的步骤。"),
-        Member("ai_gemini", "Gemini", os.getenv("ROUNDTABLE_GEMINI_MODEL", "gemini/gemini-3.5-flash-lite"),
+        Member("ai_gpt", "GPT", os.getenv("ROUNDTABLE_OPENAI_MODEL", "openai/gpt-5-mini"),
                "可行性评估", "检查方案涉及的条件、成本和限制。"),
         Member("ai_deepseek", "DeepSeek", os.getenv("ROUNDTABLE_DEEPSEEK_MODEL", "deepseek/deepseek-flash"),
                "风险与汇总", "指出关键缺口，并将讨论收束成清晰的建议。"),
@@ -59,6 +59,8 @@ async def run(topic: str, *, fake: bool) -> None:
                 missing.append(f"{member.model}（{keys or '凭据或模型配置'}）")
         if missing:
             raise ConfigurationError(f"请检查 .env 中的模型配置：{'、'.join(missing)}")
+        if members[0].model.startswith("anthropic/"):
+            print(f"Anthropic API：{anthropic_endpoint()}", file=sys.stderr)
 
     speeches: list[Speech] = []
     async for speech in Roundtable(members, rounds=2).discuss(topic, llm):

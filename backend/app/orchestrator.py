@@ -1,18 +1,24 @@
 import asyncio
+import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from math import ceil
 
 from .context import compression_prompt, estimate_tokens
 from .llm import Usage
 from .modes.base import StructuredReply, Turn, build_prompt
 from .modes.roundtable import ModelCallError, Speech
 
+logger = logging.getLogger(__name__)
+
+SPEECH_TOKEN_LIMIT = 4000
+STRUCTURED_TOKEN_LIMIT = 8000
+
 
 @dataclass
 class Output:
     parts: list[str] = field(default_factory=list)
     usage: Usage | None = None
+    truncated: bool = False
 
     @property
     def content(self):
@@ -22,19 +28,46 @@ class Output:
 async def stream_turn(llm, turn, prompt, output, on_delta=None, *, max_tokens=None):
     member = turn.member
     if max_tokens is None:
-        if member.max_chars is not None:
-            max_tokens = ceil(member.max_chars * 1.5)
-        if turn.parse is not None:
-            max_tokens = max(1200, max_tokens or 0)
+        max_tokens = STRUCTURED_TOKEN_LIMIT if turn.parse is not None else SPEECH_TOKEN_LIMIT
     stream = await llm.stream_chat(member.model, prompt, member.temperature, max_tokens)
+    labels = (member.name, f"{member.name}（{member.role}）", f"{member.name} ({member.role})")
+    prefixes = tuple(f"[{label}]{colon}" for label in labels for colon in ("：", ":")) if turn.parse is None else ()
+    pending = ""
+    after_prefix = False
+
+    def emit(delta):
+        if delta:
+            output.parts.append(delta)
+            if on_delta:
+                on_delta(delta)
+
     try:
         async with aclosing(stream):
             async for delta in stream:
-                output.parts.append(delta)
-                if on_delta:
-                    on_delta(delta)
+                if prefixes:
+                    pending += delta
+                    text = pending.lstrip()
+                    matched = next((prefix for prefix in prefixes if text.startswith(prefix)), None)
+                    if matched is not None:
+                        delta = text[len(matched):]
+                        after_prefix = True
+                    elif len(pending) <= max(128, max(map(len, prefixes))) and any(
+                        prefix.startswith(text) for prefix in prefixes
+                    ):
+                        continue
+                    else:
+                        delta = pending
+                    prefixes, pending = (), ""
+                if after_prefix:
+                    delta = delta.lstrip()
+                    after_prefix = not delta
+                emit(delta)
     finally:
         output.usage = stream.usage
+        output.truncated = stream.truncated
+        emit(pending)
+    if output.truncated:
+        logger.warning("模型 %s 达到输出上限（%s tokens），发言可能不完整。", member.model, max_tokens)
     if not output.content.strip() or output.usage is None:
         raise RuntimeError("模型返回了空的流式响应")
 
@@ -124,7 +157,7 @@ class RoomFlow:
                 return
             if member is None:
                 return
-            result = await self.call(Turn(member, number), messages, visible=False, max_tokens=768)
+            result = await self.call(Turn(member, number), messages, visible=False)
             if self.blocked_reason:
                 self.check_budget()
             if result is None:
@@ -177,7 +210,7 @@ class RoomFlow:
                 if visible and turn.parse is not None:
                     output.parts = [result.content]
                     emit(result.content)
-                room.end_message(member_id, message, output, meta=result.meta)
+                room.end_message(member_id, message, output, interrupted=output.truncated, meta=result.meta)
                 if visible:
                     self.successful += 1
                 return result

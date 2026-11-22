@@ -33,7 +33,7 @@ async def test_two_rounds_and_summary(members):
 async def test_history_and_explicit_summarizer(members):
     class RecordingLLM(FakeLLM):
         def __init__(self):
-            super().__init__({member.model: member.name for member in members})
+            super().__init__({member.model: member.name for member in members}, thinking_tokens=3500)
             self.prompts = []
 
         async def stream_chat(self, model, messages, temperature, max_tokens):
@@ -55,7 +55,8 @@ async def test_history_and_explicit_summarizer(members):
     ]
     assert prompt[-1]["role"] == "user"
     assert "现在轮到你（甲），本轮要求：汇总讨论" in prompt[-1]["content"]
-    assert max_tokens == 450
+    assert "不要在开头加名字或角色" in prompt[-1]["content"]
+    assert max_tokens >= 4000
 
 
 @pytest.mark.asyncio

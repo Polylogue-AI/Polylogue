@@ -26,7 +26,8 @@ async def test_litellm_stream_usage_and_exchange_rate(monkeypatch):
             for text in ("你", "好"):
                 yield litellm.ModelResponseStream(
                     id="test", model=model,
-                    choices=[{"index": 0, "delta": {"content": text}}],
+                    choices=[{"index": 0, "delta": {"content": text},
+                              "finish_reason": "length" if text == "好" else None}],
                 )
             yield litellm.ModelResponseStream(
                 id="test", model=model, choices=[],
@@ -39,6 +40,7 @@ async def test_litellm_stream_usage_and_exchange_rate(monkeypatch):
     stream = await LiteLLM(Decimal("7.2")).stream_chat(model, messages, 0.5, 450)
 
     assert [part async for part in stream] == ["你", "好"]
+    assert stream.truncated
     assert stream.usage == Usage(100, 20, Decimal("0.0014"))
 
 

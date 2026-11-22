@@ -23,7 +23,8 @@ def build_context(
          "content": f"[{label}]：{text}"}
         for author_id, label, text in history
     )
-    request = f"现在轮到你（{speaker_name}），本轮要求：{instruction}"
+    request = (f"现在轮到你（{speaker_name}），本轮要求：{instruction}"
+               "\n直接写发言内容，不要在开头加名字或角色。")
     interjections = "\n".join(pending)
     if interjections:
         request += f"\n以下是人类刚刚的插话，请先回应：\n{interjections}"

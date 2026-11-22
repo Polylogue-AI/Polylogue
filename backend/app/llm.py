@@ -6,7 +6,21 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
+from os import getenv
 from typing import Protocol, TypedDict
+from urllib.parse import urlsplit
+
+
+def anthropic_endpoint() -> str:
+    configured = getenv("ANTHROPIC_API_BASE") or getenv("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    try:
+        url = urlsplit(configured)
+        if url.scheme in {"http", "https"} and url.hostname:
+            host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+            return f"{url.scheme}://{host}" + (f":{url.port}" if url.port else "")
+    except ValueError:
+        pass
+    return "地址无效"
 
 
 class ChatMessage(TypedDict):
@@ -26,6 +40,7 @@ class ChatStream(AsyncIterator[str]):
 
     def __init__(self, iterate: Callable[["ChatStream"], AsyncGenerator[str, None]]) -> None:
         self.usage: Usage | None = None
+        self.truncated = False
         self._iterator = iterate(self)
 
     async def __anext__(self) -> str:
@@ -46,6 +61,9 @@ class LiteLLM:
     def __init__(self, usd_cny_rate: Decimal) -> None:
         if not usd_cny_rate.is_finite() or usd_cny_rate <= 0:
             raise ValueError("USD_CNY_RATE 必须是大于零的数字")
+        import litellm
+
+        litellm.suppress_debug_info = True
         self.usd_cny_rate = usd_cny_rate
         self.checks: dict[str, bool] = {}
         self.provider_checks: dict[str, bool] = {}
@@ -104,7 +122,7 @@ class LiteLLM:
         async def iterate(result: ChatStream) -> AsyncGenerator[str, None]:
             options = {"max_tokens": max_tokens} if max_tokens is not None else {}
             if model == "deepseek/deepseek-flash":
-                # Reserve the short turn budget for text that the roundtable can use.
+                # Use the provider's direct-answer mode for this model.
                 options["thinking"] = {"type": "disabled"}
             chunks = []
             parts: list[str] = []
@@ -119,9 +137,13 @@ class LiteLLM:
             try:
                 async for chunk in response:
                     chunks.append(chunk)
-                    if chunk.choices and (delta := chunk.choices[0].delta.content):
-                        parts.append(delta)
-                        yield delta
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+                        if choice.finish_reason == "length":
+                            result.truncated = True
+                        if delta := choice.delta.content:
+                            parts.append(delta)
+                            yield delta
                 self.record_check(model, bool("".join(parts).strip()))
             except Exception:
                 self.record_check(model, False)
@@ -168,11 +190,12 @@ class LiteLLM:
 class FakeLLM:
     def __init__(
         self, replies: Mapping[str, str] | None = None,
-        *, cost_cny: Decimal = Decimal("0.0123"), delay: float = 0,
+        *, cost_cny: Decimal = Decimal("0.0123"), delay: float = 0, thinking_tokens: int = 0,
     ) -> None:
         self.replies = dict(replies or {})
         self.cost_cny = cost_cny
         self.delay = delay
+        self.thinking_tokens = thinking_tokens
 
     def cheapest(self, members, messages):
         return next(iter(members), None)
@@ -219,8 +242,9 @@ class FakeLLM:
                 reply = json.dumps({"score_pro": 58, "comment": "本轮正方的论据更完整。"}, ensure_ascii=False)
             elif messages and messages[0]["content"].startswith("压缩早期讨论"):
                 reply = "早期讨论明确了目标、实施步骤与待验证风险。"
-        if max_tokens is not None:
-            reply = reply[:max_tokens]
+        available = len(reply) if max_tokens is None else max(0, max_tokens - self.thinking_tokens)
+        truncated = len(reply) > available
+        reply = reply[:available]
 
         async def iterate(result: ChatStream) -> AsyncGenerator[str, None]:
             emitted = 0
@@ -230,7 +254,9 @@ class FakeLLM:
                         await asyncio.sleep(self.delay)
                     emitted += 1
                     yield character
+                result.truncated = truncated
             finally:
-                result.usage = Usage(sum(len(m["content"]) for m in messages), emitted, self.cost_cny)
+                thinking = self.thinking_tokens if max_tokens is None else min(self.thinking_tokens, max_tokens)
+                result.usage = Usage(sum(len(m["content"]) for m in messages), thinking + emitted, self.cost_cny)
 
         return ChatStream(iterate)

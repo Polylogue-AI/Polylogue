@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -10,7 +11,7 @@ from .api import api, seed_members
 from .auth import ApiError, new_user
 from .config import Settings
 from .db import Store, now
-from .llm import FakeLLM, LiteLLM
+from .llm import FakeLLM, LiteLLM, anthropic_endpoint
 from .ws import ws
 
 
@@ -45,6 +46,8 @@ def create_app(settings: Settings | None = None, llm=None):
                             db.put_message(dict(message, streaming=False, interrupted=True))
             state.llm = llm if llm is not None else (FakeLLM(delay=settings_now.fake_delay) if settings_now.fake
                                                      else LiteLLM(settings_now.usd_cny_rate))
+            if isinstance(state.llm, LiteLLM):
+                logging.getLogger("uvicorn.error").info("Anthropic API：%s", anthropic_endpoint())
             yield
         finally:
             await asyncio.gather(*(runtime.stop() for runtime in state.rooms.values()), return_exceptions=True)

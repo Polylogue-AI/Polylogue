@@ -342,9 +342,29 @@ async def test_structured_turn_uses_json_only_instructions_and_larger_budget():
     prompt = build_prompt(turn, "写点评", [])
     assert prompt[-1]["role"] == "user" and "仅返回 JSON" in prompt[-1]["content"]
     assert "至少指出" not in prompt[-1]["content"] and "发言不超过" not in prompt[-1]["content"]
-    fake = CaptureLLM({member.model: '{"comment":"合格"}'})
+    fake = CaptureLLM({member.model: '{"comment":"合格"}'}, thinking_tokens=7000)
     await stream_turn(fake, turn, prompt, Output())
-    assert fake.max_tokens >= 1200
+    assert fake.max_tokens >= 8000
+
+
+def test_roundtable_stream_saves_body_without_self_prefix_and_marks_token_limit():
+    prefix = "[Claude（产品顾问）]： "
+    fake = FakeLLM({
+        "anthropic/claude-haiku-5-5": prefix + "先确定主题。",
+    }, thinking_tokens=4000 - len(prefix + "先"))
+
+    with logged_in(fake) as client:
+        login(client)
+        url = create_room(client, rounds=1, ai_member_ids=["ai_claude", "ai_gemini"])
+        with client.websocket_connect(url) as socket:
+            snapshot(socket)
+            socket.send_json({"type": "start"})
+            _, events = finish(socket)
+        saved = next(message for message in read_history(client, url) if message["author_id"] == "ai_claude")
+
+    ending = next(item for item in events if item["type"] == "message_end" and item["id"] == saved["id"])
+    assert ending["content"] == saved["content"] == "先"
+    assert ending["interrupted"] and saved["interrupted"]
 
 
 def test_catalog_includes_unassigned_models_with_model_labels():
