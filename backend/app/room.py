@@ -1,17 +1,27 @@
 import asyncio
-from collections import deque
+from collections import defaultdict, deque
 from contextlib import suppress
 from dataclasses import fields
 
 from .db import money, new_id, now
-from .modes.roundtable import Member, Roundtable
+from .modes.base import Member
+from .modes.crosscheck import Crosscheck
+from .modes.debate import Debate
+from .modes.pipeline import Pipeline
+from .modes.roundtable import Roundtable
 from .orchestrator import run_room
 
 
 def initial_state(room):
-    return dict(status="idle", round=0, total_rounds=room["rounds"], speaker_id=None,
+    mode = room["mode"]
+    mode_state = {"tasks": []} if mode == "pipe" else {"score_pro": None} if mode == "debate" else {}
+    return dict(status="idle", round=0, total_rounds=1 if mode == "cross" else room["rounds"], speaker_id=None,
                 next_speaker_id=None, cost_cny=0, budget_cny=room["budget_cny"], context_tokens=0,
-                summarized_until_round=0, mode_state={})
+                summarized_until_round=0, mode_state=mode_state)
+
+
+def member_from(record):
+    return Member(**{field.name: record[field.name] for field in fields(Member)})
 
 
 class Room:
@@ -24,11 +34,11 @@ class Room:
         self.pending = []
         self.mentions = deque()
         self.seq = max((message["seq"] for message in db.messages(self.id)), default=0)
-        self.active = None
+        self.active = {}
         self.ready = asyncio.Event()
         self.task = None
-        self.current_task = None
-        self.cancel_current = False
+        self.calls = {}
+        self.cancelled_calls = {}
         self.mode = None
         self.deleting = False
 
@@ -43,9 +53,8 @@ class Room:
         queue = asyncio.Queue()
         self.clients[queue] = user["id"]
         messages = [item for item in self.db.messages(self.id, last_seq) if not item["streaming"]]
-        if self.active is not None:
-            messages.append(dict(self.active))
-            messages.sort(key=lambda message: message["seq"])
+        messages.extend(dict(message) for message in self.active.values())
+        messages.sort(key=lambda message: message["seq"])
         queue.put_nowait(dict(type="snapshot", messages=messages, state=dict(self.state), online=self.online()))
         self.broadcast(dict(type="presence", online=self.online()))
         return queue
@@ -54,13 +63,15 @@ class Room:
         self.clients.pop(queue, None)
         self.broadcast(dict(type="presence", online=self.online()))
 
-    def update(self, **changes):
-        if all(self.state[key] == value for key, value in changes.items()):
+    def update(self, *, summary=None, **changes):
+        if summary is None and all(self.state[key] == value for key, value in changes.items()):
             return
         self.state.update(changes)
         self.record.update(status=self.state["status"], cost_cny=self.state["cost_cny"],
                            updated_at=now().isoformat())
         with self.db.transaction():
+            if summary is not None:
+                self.db.put("room_summaries", self.id, summary)
             self.db.put("room_states", self.id, self.state)
             self.db.put("rooms", self.id, self.record)
         self.broadcast(dict(type="state", state=dict(self.state)))
@@ -95,9 +106,10 @@ class Room:
 
     def begin_message(self, turn):
         message = self.new_message(turn.member.id, turn.kind, "", streaming=True)
+        message.update(round=turn.round, meta=dict(turn.meta))
         with self.db.transaction():
             self.db.put_message(message)
-        self.active = message
+        self.active[message["id"]] = message
         self.broadcast(dict(type="message_start", message=dict(message)))
         return message
 
@@ -105,27 +117,32 @@ class Room:
         message["content"] += delta
         self.broadcast(dict(type="message_delta", id=message["id"], delta=delta))
 
-    def end_message(self, message, output, *, interrupted=False):
+    def end_message(self, member_id, message, output, *, interrupted=False, meta=None):
         usage = output.usage
         cost = money(usage.cost_cny) if usage and usage.cost_cny is not None else None
-        message.update(content=output.content, cost_cny=None if cost is None else float(cost),
-                       interrupted=interrupted, streaming=False)
-        self.active = None
+        if not usage and message is None:
+            return
+        if message is not None:
+            message.update(content=output.content, cost_cny=None if cost is None else float(cost),
+                           interrupted=interrupted, streaming=False, meta=message["meta"] | (meta or {}))
+            self.active.pop(message["id"], None)
         total = money(self.state["cost_cny"])
         if usage:
             total += money(cost or 0)
         with self.db.transaction():
-            self.db.put_message(message)
+            if message is not None:
+                self.db.put_message(message)
             if usage:
-                self.db.charge(self.id, self.record["created_by"], message["author_id"], usage)
-            if message["seq"] == self.seq and message["content"]:
+                self.db.charge(self.id, self.record["created_by"], member_id, usage)
+            if message is not None and message["seq"] == self.seq and message["content"]:
                 self.record["last_preview"] = f"{self.seats[message['author_id']]['name']}：{message['content'][:60]}"
             self.record.update(cost_cny=float(total), updated_at=now().isoformat())
             self.db.put("rooms", self.id, self.record)
             if cost is not None:
                 self.db.put("room_states", self.id, dict(self.state, cost_cny=float(total)))
-        self.broadcast(dict(type="message_end", id=message["id"], content=message["content"],
-                            cost_cny=message["cost_cny"], interrupted=interrupted, meta=message["meta"]))
+        if message is not None:
+            self.broadcast(dict(type="message_end", id=message["id"], content=message["content"],
+                                cost_cny=message["cost_cny"], interrupted=interrupted, meta=message["meta"]))
         if total != money(self.state["cost_cny"]):
             self.update(cost_cny=float(total))
 
@@ -139,17 +156,43 @@ class Room:
             return "创建者的本月预算已用完，讨论停止。"
         return None
 
-    def history(self, exclude=()):
+    def history(self, exclude=(), *, through_round=None):
         history = []
         pending = set(exclude)
+        summarized = self.state["summarized_until_round"]
         for message in self.db.messages(self.id):
-            if message["kind"] not in {"chat", "summary"} or not message["content"] or message["id"] in pending:
+            if (message["kind"] not in {"chat", "summary", "verdict"} or not message["content"] or
+                    message["id"] in pending or (summarized and message["round"] <= summarized) or
+                    (through_round is not None and message["round"] > through_round)):
                 continue
             seat = self.seats.get(message["author_id"]) or self.db.get("users", message["author_id"])
             if seat:
                 name = seat["name"] if seat.get("role") is None else f"{seat['name']}（{seat['role']}）"
                 history.append((seat["id"], name, message["content"]))
-        return history[-100:]
+        return history
+
+    def context_summary(self):
+        return self.db.get("room_summaries", self.id) or ""
+
+    def compression_members(self):
+        members = {member["model"]: member_from(member) for member in self.db.list("members")}
+        for member in self.members.values():
+            members[member.model] = member
+        return list(members.values())
+
+    def track(self, task, member_id):
+        self.calls[task] = member_id
+        self.update(speaker_id=next(iter(self.calls.values())))
+
+    def untrack(self, task):
+        self.calls.pop(task, None)
+        self.cancelled_calls.pop(task, None)
+        if self.calls:
+            self.update(speaker_id=next(iter(self.calls.values())))
+        elif self.ready.is_set():
+            self.update(speaker_id=None)
+        else:
+            self.update(speaker_id=None, status="paused")
 
     def directions(self):
         return [message["content"] for message in self.db.messages(self.id) if message["kind"] == "steer"]
@@ -174,22 +217,30 @@ class Room:
     def start(self):
         if self.task is not None and not self.task.done():
             return None
-        if self.record["mode"] != "round":
-            return "mode_unavailable", "当前版本只支持启动圆桌模式"
         if self.state["status"] == "budget_exceeded":
             return "budget_exceeded", "预算已用完"
         continuing = self.state["status"] == "finished"
+        mode = self.record["mode"]
+        if continuing and mode != "round":
+            return "mode_finished", "这个模式已经结束，可以新建一个房间继续"
         round_number = self.state["total_rounds"] + 1 if continuing else 1
         configs = self.db.get("room_members", self.id)
-        members = [Member(**{field.name: config[field.name] for field in fields(Member)}) for config in configs]
-        summarizer = next((seat["id"] for seat in self.seats.values() if seat["duty"] == "summarizer"), None)
-        self.mode = Roundtable(members, 1 if continuing else self.record["rounds"],
-                               summarizer_id=summarizer, first_round=round_number)
+        self.members = {member["id"]: member_from(member) for member in configs}
+        duties = defaultdict(list)
+        for member in self.members.values():
+            duties[self.seats[member.id]["duty"]].append(member)
+        if mode == "round":
+            summarizer = duties["summarizer"][0].id if duties["summarizer"] else None
+            self.mode = Roundtable(list(self.members.values()), 1 if continuing else self.record["rounds"],
+                                   summarizer_id=summarizer, first_round=round_number)
+        else:
+            self.mode = {"pipe": Pipeline, "cross": Crosscheck, "debate": Debate}[mode](duties, self.record["rounds"])
         if continuing:
             self.record["rounds"] = round_number
         self.ready.set()
-        next_turn = self.peek_turn(self.mode)
-        self.update(status="running", total_rounds=self.record["rounds"], next_speaker_id=next_turn.member.id)
+        next_turn = self.peek_turn(self.mode) if mode == "round" else None
+        self.update(status="running", total_rounds=1 if mode == "cross" else self.record["rounds"],
+                    next_speaker_id=next_turn.member.id if next_turn else None)
         self.task = asyncio.create_task(self.run())
         return None
 
@@ -234,12 +285,18 @@ class Room:
             self.update(status="running")
         elif kind in {"pause", "interrupt"} and self.state["status"] == "running":
             self.ready.clear()
-            if self.current_task is None:
+            if not self.calls:
                 self.update(status="paused", speaker_id=None)
             elif kind == "interrupt":
-                self.cancel_current = True
-                self.current_task.cancel()
-        elif kind == "skip" and self.current_task and not self.current_task.done():
-            self.cancel_current = True
-            self.current_task.cancel()
+                for task in self.calls:
+                    if not task.done() and task not in self.cancelled_calls:
+                        self.cancelled_calls[task] = "interrupt"
+                        task.cancel()
+        elif kind == "skip":
+            speaker = self.state["speaker_id"]
+            task = next((task for task, member_id in self.calls.items()
+                         if speaker is not None and member_id == speaker and not task.done()), None)
+            if task is not None and task not in self.cancelled_calls:
+                self.cancelled_calls[task] = "skip"
+                task.cancel()
         return None

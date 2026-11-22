@@ -176,14 +176,16 @@ def test_retry_recovers_or_emits_system_and_advances(server, failure_count):
     with client.websocket_connect(create_room(client)) as socket:
         snapshot(socket)
         socket.send_json({"type": "start"})
-        for _ in range(2):
-            assert event(socket, "message_start")["message"]["author_id"] == "ai_claude"
-            result = event(socket, "message_end")
         if failure_count == 2:
             assert event(socket, "message")["message"]["content"] == "Claude 调用失败，已跳过"
         else:
+            start = event(socket, "message_start")["message"]
+            assert start["author_id"] == "ai_claude" and start["seq"] == 1
+            result = event(socket, "message_end", id=start["id"])
             assert result["content"] and result["cost_cny"] > 0
-        assert event(socket, "message_start")["message"]["author_id"] == "ai_gemini"
+        next_start = event(socket, "message_start")["message"]
+        assert next_start["author_id"] == "ai_gemini" and next_start["seq"] == 2
+        assert fake.calls[0][0] == fake.calls[1][0]
 
 
 def test_invite_binding_and_admin_permissions(server):

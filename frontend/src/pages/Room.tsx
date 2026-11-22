@@ -33,7 +33,12 @@ export function RoomPage() {
   const room = r.room
   const st = r.state
   const status = st?.status ?? room.status
-  const speaker = room.seats.find((s) => s.id === st?.speaker_id) ?? null
+  // 并发阶段可能有多人同时输出；契约里 speaker_id 只有一个，所以以正在输出的消息为准
+  const streamingIds = [...new Set(r.messages.filter((m) => m.streaming && m.author_id).map((m) => m.author_id!))]
+  const speakers = (streamingIds.length ? streamingIds : st?.speaker_id ? [st.speaker_id] : [])
+    .map((id) => room.seats.find((s) => s.id === id)).filter((s): s is NonNullable<typeof s> => !!s)
+  const speaker = speakers[0] ?? null
+  const speakerNames = speakers.map((s) => s.name).join('、')
   const next = room.seats.find((s) => s.id === st?.next_speaker_id) ?? null
   const humans = room.seats.filter((s) => s.kind === 'human').length
   const disconnected = r.conn.status === 'reconnecting' || r.conn.status === 'closed'
@@ -78,7 +83,8 @@ export function RoomPage() {
           {speaker ? (
             <span className="speaking">
               <span className="wave" style={{ ['--seat' as string]: speaker.color }}><i /><i /><i /></span>
-              {speaker.name} 正在发言{next && next.id !== speaker.id ? `，下一位是 ${next.name}` : ''}
+              {speakers.length > 1 ? `${speakerNames} 正在同时发言` : `${speaker.name} 正在发言`}
+              {speakers.length === 1 && next && next.id !== speaker.id ? `，下一位是 ${next.name}` : ''}
             </span>
           ) : status === 'paused' ? <span>已暂停，点"继续"或先插话</span>
             : status === 'budget_exceeded' ? <span style={{ color: 'var(--bad)' }}>预算已用完，讨论停止</span> : null}
@@ -90,10 +96,10 @@ export function RoomPage() {
 
       <aside className="inspector" aria-label="房间状态">
         <div className="table-wrap">
-          <RoundTable seats={room.seats} active={speaker?.id ?? null}
+          <RoundTable seats={room.seats} active={speakers.map((s) => s.id)}
             center={<text x={140} y={129} textAnchor="middle" fontSize={11.5} fontWeight={600} fill="#55555B">{progress}</text>} />
           <div className="now">
-            {speaker ? <><b>{speaker.name}</b> 正在发言</> : status === 'paused' ? '整张桌子已暂停' : status === 'finished' ? '讨论已结束' : status === 'idle' ? '还没开始' : '没有人在发言'}
+            {speaker ? <><b>{speakerNames}</b> {speakers.length > 1 ? '正在同时发言' : '正在发言'}</> : status === 'paused' ? '整张桌子已暂停' : status === 'finished' ? '讨论已结束' : status === 'idle' ? '还没开始' : '没有人在发言'}
           </div>
         </div>
         <div className="ins-block">

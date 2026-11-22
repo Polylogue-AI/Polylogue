@@ -3,42 +3,8 @@
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
-
-from ..context import build_context
 from ..llm import LLM, Usage
-
-
-@dataclass(frozen=True)
-class Member:
-    id: str
-    name: str
-    model: str
-    role: str
-    system_prompt: str
-    temperature: float = 0.5
-    max_chars: int | None = 300
-
-
-@dataclass(frozen=True)
-class Turn:
-    member: Member
-    round: int
-    kind: Literal["chat", "summary"]
-
-    @property
-    def system_prompt(self) -> str:
-        return f"你是{self.member.name}，角色是{self.member.role}。\n{self.member.system_prompt}"
-
-    @property
-    def instruction(self) -> str:
-        goal = (
-            "汇总讨论，清楚列出建议、共识、分歧和下一步。"
-            if self.kind == "summary"
-            else f"这是第 {self.round} 轮。结合已有讨论给出你的观点。"
-        )
-        limit = f"发言不超过 {self.member.max_chars} 字。" if self.member.max_chars else ""
-        return f"{goal}{limit}\n至少指出一个前面没人提到的问题或补充。"
+from .base import Member, Turn, build_prompt
 
 
 @dataclass(frozen=True)
@@ -98,15 +64,7 @@ class Roundtable:
                 return Turn(member, number, "chat")
         return scheduled
 
-    def build_prompt(self, turn, topic, history, *, pending=(), directions=()):
-        instruction = turn.system_prompt
-        if directions:
-            instruction += "\n方向指示：\n" + "\n".join(directions)
-        return build_context(
-            topic=topic, system_prompt=instruction, instruction=turn.instruction,
-            speaker_id=turn.member.id, speaker_name=turn.member.name, history=history,
-            pending=pending,
-        )
+    build_prompt = staticmethod(build_prompt)
 
     def on_message_end(self, turn: Turn) -> None:
         if turn == self.next_speaker():

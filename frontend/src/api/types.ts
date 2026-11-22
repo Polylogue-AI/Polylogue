@@ -1,4 +1,4 @@
-// 与 docs/03-接口契约.md v0.2 逐字段对应。两者冲突时以契约为准。
+// 与 docs/03-接口契约.md v0.4 逐字段对应。两者冲突时以契约为准。
 
 export interface Invite {
   code: string

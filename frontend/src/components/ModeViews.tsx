@@ -113,24 +113,38 @@ export function PipeView({ room, messages, state, pending }: ViewProps) {
 
 /* ---------------- 交叉验证 ---------------- */
 export function CrossView({ room, messages, state, pending }: ViewProps) {
-  const answers = messages.filter((m) => m.meta.phase === 'answer')
+  const allAnswers = messages.filter((m) => m.meta.phase === 'answer')
+  // 并发阶段被打断的回答会重新生成（契约 3.4），每位回答者只显示最新一份
+  const latest = new Map<string, Message>()
+  const redone = new Map<string, number>()
+  for (const m of allAnswers) {
+    const key = m.author_id ?? m.id
+    if (latest.has(key)) redone.set(key, (redone.get(key) ?? 0) + 1)
+    latest.set(key, m)
+  }
+  const fallback = (i: number) => `回答 ${String.fromCharCode(65 + i)}`
+  const answers = [...latest.values()]
+    .map((m, i) => ({ m, label: m.meta.anon_label ?? fallback(i) }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }))
   const reviews = messages.filter((m) => m.meta.phase === 'review')
   const verdict = messages.find((m) => m.kind === 'verdict')
   const others = messages.filter((m) => !m.meta.phase && m.kind !== 'verdict')
   const phase = state?.mode_state.phase
-  const label = (i: number) => `回答 ${String.fromCharCode(65 + i)}`
   return (
     <>
       <p className="muted" style={{ fontSize: 13 }}>同一个问题，同时发给 {answers.length || room.seats.filter((x) => x.duty === 'answerer').length} 个模型</p>
       <div className="cv-q">{room.topic}</div>
       {answers.length > 0 && (
         <div className="cv-grid">
-          {answers.map((m, i) => {
+          {answers.map(({ m, label }) => {
             const s = room.seats.find((x) => x.id === m.author_id)
+            const times = redone.get(m.author_id ?? m.id)
             return (
               <div className="cv-card" key={m.id}>
-                <div className="h">{s && <Avatar {...s} size="sm" />}<b>{s?.name}</b><span className="faint" style={{ marginLeft: 'auto', fontSize: 12 }}>{label(i)}</span></div>
+                <div className="h">{s && <Avatar {...s} size="sm" />}<b>{s?.name}</b><span className="faint" style={{ marginLeft: 'auto', fontSize: 12 }}>{label}</span></div>
                 <MarkdownText text={m.content} />{m.streaming && <span className="caret" />}
+                {m.interrupted && !m.streaming && <div className="interrupted" style={{ fontSize: 12, color: 'var(--warn)' }}>（被打断，继续后会重新生成）</div>}
+                {times && !m.interrupted && <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>被打断后重新生成</div>}
               </div>
             )
           })}

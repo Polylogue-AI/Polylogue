@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, USE_MOCK, type Duty, type Mode } from '../api'
+import { api, type Duty, type Mode } from '../api'
 import { DUTY_NAME, MODE_DUTIES, MODE_FIT, MODE_NAME, defaultDuties } from '../labels'
 import { useSession } from '../state/session'
 import { useToast } from '../state/toast'
@@ -101,7 +101,7 @@ export function NewRoomSheet({ initialMode, onClose }: { initialMode: Mode; onCl
               {MODES.map((m) => (
                 <button key={m} className="mode-opt" role="radio" aria-checked={mode === m} onClick={() => setMode(m)}>
                   <ModeGlyph mode={m} size={34} />
-                  <div><b>{MODE_NAME[m]}</b><span>{MODE_FIT[m]}{!USE_MOCK && m !== 'round' ? '。后端 M3 起支持运行，现在只能创建' : ''}</span></div>
+                  <div><b>{MODE_NAME[m]}</b><span>{MODE_FIT[m]}</span></div>
                 </button>
               ))}
             </div>

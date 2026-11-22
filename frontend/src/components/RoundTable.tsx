@@ -4,7 +4,8 @@ export interface TableSeat { id: string; name: string; short: string; color: str
 
 interface Props {
   seats: TableSeat[]
-  active: string | null
+  /** 正在发言的人。并发阶段（流水线执行、交叉验证回答）可能有多位 */
+  active: string | string[] | null
   w?: number
   h?: number
   r?: number
@@ -17,18 +18,19 @@ interface Props {
 export function RoundTable({ seats, active, w = 280, h = 250, r = 88, t = 48, center, labels = true }: Props) {
   const cx = w / 2
   const cy = h / 2
-  const activeName = seats.find((s) => s.id === active)?.name
+  const activeIds = active == null ? [] : Array.isArray(active) ? active : [active]
+  const activeNames = seats.filter((s) => activeIds.includes(s.id)).map((s) => s.name)
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={activeName ? `${activeName} 正在发言` : '圆桌座位图'}>
+    <svg viewBox={`0 0 ${w} ${h}`} role="img" aria-label={activeNames.length ? `${activeNames.join('、')} 正在发言` : '圆桌座位图'}>
       <circle cx={cx} cy={cy} r={t} fill="#F4F4F6" stroke="rgba(0,0,0,.06)" />
       {center}
       {seats.map((s, i) => {
         const a = -Math.PI / 2 + (i * 2 * Math.PI) / seats.length
         const x = cx + r * Math.cos(a)
         const y = cy + r * Math.sin(a)
-        const on = s.id === active
+        const on = activeIds.includes(s.id)
         const sz = on ? 17 : 14
-        const dim = !!active && !on
+        const dim = activeIds.length > 0 && !on
         const ly = y + (Math.sin(a) > 0.2 ? 32 : Math.sin(a) < -0.2 ? -24 : 30)
         return (
           <g key={s.id}>

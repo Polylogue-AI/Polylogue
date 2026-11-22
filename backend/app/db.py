@@ -97,7 +97,7 @@ class Store:
 
     def delete_room(self, room):
         with self.transaction():
-            for collection in ("rooms", "room_members", "room_states"):
+            for collection in ("rooms", "room_members", "room_states", "room_summaries"):
                 self.delete(collection, room)
             self.conn.exec_driver_sql("DELETE FROM messages WHERE room=?", (room,))
 

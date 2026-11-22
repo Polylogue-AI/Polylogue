@@ -22,6 +22,24 @@ SAMPLE_MEMBERS = [
     ("llama", "Llama 本地", "L", "#6A6A70", "ollama/llama3.1:8b", "草稿员", "给出可迭代的第一版草案。"),
 ]
 
+MODEL_LABELS = {
+    "anthropic/claude-haiku-5-5": "Claude Haiku 5.5",
+    "anthropic/claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "anthropic/claude-opus-5-5": "Claude Opus 5.5",
+    "openai/gpt-5": "GPT-5",
+    "openai/gpt-5-mini": "GPT-5 mini",
+    "openai/gpt-5-nano": "GPT-5 nano",
+    "gemini/gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite",
+    "gemini/gemini-3.6-flash": "Gemini 3.6 Flash",
+    "gemini/gemini-3.8-flash": "Gemini 3.8 Flash",
+    "deepseek/deepseek-flash": "DeepSeek Flash",
+    "deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+    "dashscope/qwen-max": "Qwen Max",
+    "dashscope/qwen-plus": "Qwen Plus",
+    "dashscope/qwen-turbo": "Qwen Turbo",
+    "ollama/llama3.1:8b": "Llama 3.1 8B（本地）",
+}
+
 
 def seed_members(db):
     for key, name, short, color, model, role, prompt in SAMPLE_MEMBERS:
@@ -90,13 +108,17 @@ async def users(request: Request):
 @api.get("/models", dependencies=[Depends(current_user)])
 async def models(request: Request):
     state = request.app.state
-    catalog = {model: name for _, name, _, _, model, _, _ in SAMPLE_MEMBERS}
+    catalog = dict(MODEL_LABELS)
     catalog.update({item["model"]: catalog.get(item["model"], item["model"].split("/", 1)[-1])
                     for item in state.db.list("members")})
-    checks = {} if state.settings.fake else state.llm.checks
-    return [dict(id=model, label=label, provider=model.partition("/")[0],
-                 available=state.settings.fake or checks.get(model, False))
-            for model, label in catalog.items()]
+    options = []
+    providers = {}
+    for model, label in catalog.items():
+        provider = model.partition("/")[0]
+        if provider not in providers:
+            providers[provider] = state.settings.fake or state.llm.provider_available(model, provider)
+        options.append(dict(id=model, label=label, provider=provider, available=providers[provider]))
+    return options
 
 
 def required(db, collection, key, message):
@@ -214,7 +236,7 @@ async def create_room(data: RoomInput, request: Request, user=Depends(current_us
         db.put("rooms", record["id"], record)
         db.put("room_members", record["id"], ai_members)
         db.put("room_states", record["id"], initial_state(record))
-    if data.auto_start and data.mode == "round":
+    if data.auto_start:
         runtime = state.rooms[record["id"]] = Room(db, dict(record), state.llm)
         runtime.start()
     return record
