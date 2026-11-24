@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { api, type SandboxStatus } from '../api'
 import { Avatar } from '../components/Avatar'
+import { RunnerProvider, type ServerRun } from '../components/CodeRunner'
 import { Composer } from '../components/Composer'
 import { Icon } from '../components/Icon'
 import { CrossView, DebateView, PipeView, RoundView } from '../components/ModeViews'
@@ -15,6 +17,8 @@ export function RoomPage() {
   const toast = useToast()
   const stageRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  const [sandbox, setSandbox] = useState<SandboxStatus | null>(null)
+  useEffect(() => { api.sandbox().then(setSandbox).catch(() => {}) }, [])
 
   // 只有用户本来就在底部时才自动滚动，避免看历史时被拽下去
   const onScroll = () => {
@@ -50,7 +54,14 @@ export function RoomPage() {
 
   const act = (type: 'start' | 'pause' | 'resume' | 'interrupt' | 'skip', msg?: string) => { r.send({ type }); if (msg) toast(msg) }
 
+  // 服务器启用了代码运行才显示"在服务器运行"；暂时不可用时照样提交，后端会回一条"运行环境不可用"的结果（契约 4.3）
+  const serverRun: ServerRun | undefined = sandbox?.enabled && r.conn.status === 'open'
+    ? (language, files, replyTo) => { r.send({ type: 'run', language, files, reply_to: replyTo }); toast('已提交到服务器运行，结果会出现在房间里') }
+    : undefined
+  const say = (c: string, m: string[]) => { r.say(c, m); if (m.length) toast(`${room.seats.find((s) => s.id === m[0])?.name} 会在下一个发言`) }
+
   return (
+    <RunnerProvider onReport={r.conn.status === 'closed' ? undefined : say} serverRun={serverRun}>
     <div className="room">
       <div className="room-main">
         <div className="toolbar">
@@ -90,7 +101,7 @@ export function RoomPage() {
             : status === 'budget_exceeded' ? <span style={{ color: 'var(--bad)' }}>预算已用完，讨论停止</span> : null}
         </div>
         <Composer seats={room.seats} disabled={r.conn.status === 'closed'}
-          onSay={(c, m) => { r.say(c, m); if (m.length) toast(`${room.seats.find((s) => s.id === m[0])?.name} 会在下一个发言`) }}
+          onSay={say}
           onSteer={(c) => { r.send({ type: 'steer', content: c }); toast('方向指示已生效') }} />
       </div>
 
@@ -119,5 +130,6 @@ export function RoomPage() {
         </div>
       </aside>
     </div>
+    </RunnerProvider>
   )
 }

@@ -104,3 +104,86 @@ async def test_litellm_omits_temperature_for_unsupported_models(monkeypatch, mod
         model, [{"role": "user", "content": "test"}], 0.65, 450,
     )
     assert [part async for part in stream] == ["OK"]
+
+
+@pytest.mark.asyncio
+async def test_litellm_reassembles_interleaved_tool_fragments(monkeypatch):
+    import litellm
+
+    from app.sandbox import TOOL
+
+    model = "anthropic/claude-haiku-5-5"
+    messages = [{"role": "user", "content": "运行验证"}]
+
+    async def completion(**kwargs):
+        assert kwargs["tools"] == [TOOL]
+
+        async def chunks():
+            blocks = [
+                [{"index": 0, "id": "alpha", "function": {"name": "run_code", "arguments": '{"language":'}}],
+                [{"index": 1, "id": "beta", "function": {"name": "run_code", "arguments": '{"files":'}}],
+                [{"index": 0, "function": {"arguments": '"python"}'}},
+                 {"index": 1, "function": {"arguments": '[]}'}}],
+            ]
+            for calls in blocks:
+                yield litellm.ModelResponseStream(
+                    id="test", model=model, choices=[{"index": 0, "delta": {"tool_calls": calls}}],
+                )
+            yield litellm.ModelResponseStream(
+                id="test", model=model, choices=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            )
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    engine = LiteLLM(Decimal("7.2"))
+    stream = await engine.stream_chat(model, messages, 0.5, 100, tools=[TOOL])
+    assert [part async for part in stream] == []
+    assert [item["id"] for item in stream.tool_calls] == ["alpha", "beta"]
+    assert [item["function"]["arguments"] for item in stream.tool_calls] == ['{"language":"python"}', '{"files":[]}']
+    assert engine.provider_checks["anthropic"] is True
+    assert stream.usage and stream.usage.tokens_out == 20
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_only", [False, True])
+async def test_missing_wire_usage_estimates_cost_even_for_tool_only_response(monkeypatch, caplog, tool_only):
+    import litellm
+
+    from app.modes.base import Member, Turn
+    from app.orchestrator import Output, stream_turn
+    from app.sandbox import TOOL
+
+    model = "anthropic/claude-haiku-4-5-20251001"
+    engine = LiteLLM(Decimal("7.2"))
+    seen = []
+
+    def token_counter(**kwargs):
+        seen.append(kwargs)
+        return 100 if "messages" in kwargs else 20
+
+    async def completion(**_):
+        async def chunks():
+            if tool_only:
+                delta = {"tool_calls": [{
+                    "index": 0, "id": "call_a",
+                    "function": {"name": "run_code", "arguments": "{}"},
+                }]}
+            else:
+                delta = {"content": "正文"}
+            yield litellm.ModelResponseStream(id="test", model=model, choices=[{"index": 0, "delta": delta}])
+        return chunks()
+
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    monkeypatch.setattr(litellm, "token_counter", token_counter)
+    output = Output()
+    turn = Turn(Member("ai_test", "测试", model, "测试", ""), 1)
+    await stream_turn(engine, turn, [{"role": "user", "content": "试跑"}], output,
+                      tools=[TOOL] if tool_only else None)
+    assert output.usage == Usage(100, 20, Decimal("0.0014"))
+    assert "缺少用量数据" in caplog.text and len(seen) == 2
+    if tool_only:
+        assert "run_code" in seen[1]["text"] and not output.content
+        assert output.tool_calls[0]["id"] == "call_a"
+    else:
+        assert output.content == "正文"

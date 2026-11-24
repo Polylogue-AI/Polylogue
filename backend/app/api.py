@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from datetime import timedelta
 from typing import Literal
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from .auth import (COOKIE, SESSION_SECONDS, ApiError, admin_user, create_invite,
                    current_user, log_in, normalize_invite, session_hash)
 from .db import money, new_id, now
-from .llm import supports_temperature
+from .llm import supports_temperature, supports_tools
 from .room import Room, initial_state
 from .schemas import InviteInput, Login, MemberInput, MemberPatch, RoomInput
 
@@ -46,7 +47,7 @@ def seed_members(db):
     for key, name, short, color, model, role, prompt in SAMPLE_MEMBERS:
         member = dict(id=f"ai_{key}", name=name, short=short, color=color, model=model, role=role,
                       system_prompt=prompt, temperature=0.5, max_chars=300,
-                      monthly_budget_cny=None, can_mention=False)
+                      monthly_budget_cny=None, can_mention=False, can_run_code=False)
         db.put("members", member["id"], member)
 
 
@@ -113,15 +114,26 @@ async def models(request: Request):
     for member in state.db.list("members"):
         model = member["model"]
         catalog.setdefault(model, model.split("/", 1)[-1])
-    options = []
-    providers = {}
-    for model, label in catalog.items():
-        provider = model.partition("/")[0]
-        if provider not in providers:
-            providers[provider] = state.settings.fake or state.llm.provider_available(model, provider)
-        options.append(dict(id=model, label=label, provider=provider, available=providers[provider],
-                            supports_temperature=supports_temperature(model)))
-    return options
+    def build_options():
+        options = []
+        providers = {}
+        for model, label in catalog.items():
+            provider = model.partition("/")[0]
+            if provider not in providers:
+                providers[provider] = state.settings.fake or state.llm.provider_available(model, provider)
+            options.append(dict(id=model, label=label, provider=provider, available=providers[provider],
+                                supports_temperature=supports_temperature(model),
+                                supports_tools=supports_tools(state.llm, model, state.settings.tool_models)))
+        return options
+
+    return await asyncio.to_thread(build_options)
+
+
+@api.get("/sandbox", dependencies=[Depends(current_user)])
+async def sandbox_status(request: Request):
+    sandbox = request.app.state.sandbox
+    await sandbox.refresh()
+    return sandbox.status()
 
 
 def required(db, collection, key, message):
@@ -132,7 +144,7 @@ def required(db, collection, key, message):
 
 
 def member_view(db, member):
-    return dict(member, month_cost_cny=float(db.monthly_cost(member=member["id"])))
+    return dict(member, can_run_code=member.get("can_run_code", False), month_cost_cny=float(db.monthly_cost(member=member["id"])))
 
 
 def member_fields(data, *, exclude_unset=False):
@@ -240,7 +252,7 @@ async def create_room(data: RoomInput, request: Request, user=Depends(current_us
         db.put("room_members", record["id"], ai_members)
         db.put("room_states", record["id"], initial_state(record))
     if data.auto_start:
-        runtime = state.rooms[record["id"]] = Room(db, dict(record), state.llm)
+        runtime = state.rooms[record["id"]] = Room(db, dict(record), state.llm, state.sandbox, state.settings.tool_models)
         runtime.start()
     return record
 

@@ -8,11 +8,11 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from .auth import COOKIE, get_session
 from .room import Room
-from .schemas import Action, Hello, Say, Steer
+from .schemas import Action, Hello, RunEvent, Say, Steer
 
 
 ws = APIRouter()
-client_event = TypeAdapter(Annotated[Say | Steer | Action, Field(discriminator="type")])
+client_event = TypeAdapter(Annotated[Say | Steer | RunEvent | Action, Field(discriminator="type")])
 
 
 def error(code, message):
@@ -62,7 +62,7 @@ async def room_socket(socket: WebSocket, room_id: str):
         if record is None:
             await socket.close(code=4404)
             return
-        state.rooms[room_id] = Room(state.db, record, state.llm)
+        state.rooms[room_id] = Room(state.db, record, state.llm, state.sandbox, state.settings.tool_models)
     runtime = state.rooms[room_id]
     if runtime.deleting:
         await socket.close(code=4404)

@@ -518,3 +518,104 @@ def test_v05_catalog_merges_extra_and_manually_entered_models(monkeypatch, tmp_p
         assert member["model"] == manual_model
         updated = client.patch(f"/api/members/{member['id']}", json={"model": "anthropic/claude-haiku-5-5"})
         assert updated.is_success and updated.json()["temperature"] == 0.65
+
+
+def test_provider_cold_start_then_failure_then_recovery(monkeypatch):
+    import litellm
+
+    model = "anthropic/claude-haiku-5-5"
+    engine = LiteLLM(Decimal("7.2"))
+    monkeypatch.setattr(litellm, "validate_environment", lambda name: {
+        "keys_in_environment": name.startswith("anthropic/"),
+    })
+    with TestClient(create_app(Settings(":memory:", "TABLE2"), engine)) as client:
+        login(client)
+
+        def available():
+            response = client.get("/api/models")
+            assert response.is_success
+            return {item["id"]: item["available"] for item in response.json()}
+
+        cold = available()
+        assert cold[model]
+        assert not cold["openai/gpt-5"] and not cold["ollama/llama3.1:8b"]
+        engine.record_check(model, False)
+        assert not available()[model]
+        engine.record_check(model, True)
+        assert available()[model]
+        engine.record_check("ollama/llama3.1:8b", True)
+        assert available()["ollama/llama3.1:8b"]
+
+
+def test_catalog_caches_tools_and_does_not_block_sandbox(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import litellm
+
+    entered = threading.Event()
+    release = threading.Event()
+    lookups = Counter()
+
+    def slow_support(*, model):
+        lookups[model] += 1
+        assert not model.startswith(("ollama/", "ollama_chat/"))
+        if model == "anthropic/claude-haiku-5-5":
+            entered.set()
+            release.wait(5)
+        return model.startswith("anthropic/")
+
+    monkeypatch.setattr(litellm, "supports_function_calling", slow_support)
+    monkeypatch.setattr(litellm, "validate_environment", lambda _: {"keys_in_environment": True})
+    engine = LiteLLM(Decimal("7.2"))
+    settings = Settings(":memory:", "TABLE2", tool_models=frozenset({"ollama_chat/manual"}),
+                        extra_models={"ollama_chat/manual": "Manual"})
+    with TestClient(create_app(settings, engine)) as client, ThreadPoolExecutor(max_workers=3) as pool:
+        login(client)
+        first = pool.submit(client.get, "/api/models")
+        try:
+            assert entered.wait(2)
+            second = pool.submit(client.get, "/api/models")
+            sandbox = pool.submit(client.get, "/api/sandbox").result(timeout=2)
+            assert sandbox.is_success and not first.done()
+        finally:
+            release.set()
+        first_list = first.result(timeout=5).json()
+        assert second.result(timeout=5).json() == first_list
+        assert client.get("/api/models").json() == first_list
+
+    support = {item["id"]: item["supports_tools"] for item in first_list}
+    assert support["anthropic/claude-haiku-5-5"] and support["ollama_chat/manual"]
+    assert not support["ollama/llama3.1:8b"]
+    assert set(lookups.values()) == {1}
+    assert all(not model.startswith(("ollama/", "ollama_chat/")) for model in lookups)
+
+
+def test_missing_stream_usage_preserves_message_and_cost_without_retry(caplog):
+    calls = Counter()
+
+    class TextOnlyLLM(FakeLLM):
+        async def stream_chat(self, model, messages, temperature, max_tokens):
+            calls[model] += 1
+
+            async def iterate(_stream):
+                yield "正文已生成"
+
+            return ChatStream(iterate)
+
+    with logged_in(TextOnlyLLM()) as client:
+        login(client)
+        with client.websocket_connect(create_room(client)) as socket:
+            snapshot(socket)
+            socket.send_json({"type": "start"})
+            final, frames = finish(socket)
+        room_id = next(frame["message"]["room_id"] for frame in frames if frame["type"] == "message_start")
+        with client.websocket_connect(f"/ws/rooms/{room_id}") as socket:
+            saved = snapshot(socket)["messages"]
+    assert calls and all(count <= 2 for count in calls.values())
+    assert sum(calls.values()) == 4
+    assert len(saved) == 4
+    assert all(item["content"] == "正文已生成" and item["cost_cny"] == 0.0123
+               and not item["interrupted"] for item in saved)
+    assert final["cost_cny"] == 0.0492
+    assert "缺少用量数据" in caplog.text

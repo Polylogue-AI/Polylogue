@@ -16,6 +16,7 @@ class Member:
     system_prompt: str
     temperature: float = 0.5
     max_chars: int | None = 300
+    can_run_code: bool = False
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class StructuredReply:
     content: str
     meta: dict = field(default_factory=dict)
     data: object = None
+    runs: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class Turn:
     parse: Callable[[str], StructuredReply] | None = None
     private_history: tuple[tuple[str, str, str], ...] | None = None
     system_prompt_override: str | None = None
+    allow_tools: bool = False
 
     @property
     def system_prompt(self) -> str:

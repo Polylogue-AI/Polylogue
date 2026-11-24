@@ -20,6 +20,20 @@ class Settings:
     monthly_user_limit: float | None = None
     extra_models: dict[str, str] = field(default_factory=dict)
 
+    sandbox_enabled: bool = False
+    sandbox_image: str = "roundtable-sandbox"
+    sandbox_timeout: int = 20
+    sandbox_max_parallel: int = 2
+    sandbox_max_runs_per_turn: int = 5
+    sandbox_memory: str = "512m"
+    tool_models: frozenset[str] = frozenset()
+
+    def __post_init__(self):
+        if not 1 <= self.sandbox_timeout <= 60:
+            raise ValueError("SANDBOX_TIMEOUT 必须为 1–60 秒")
+        if min(self.sandbox_max_parallel, self.sandbox_max_runs_per_turn) < 1:
+            raise ValueError("沙箱并发数和每轮次数必须至少为 1")
+
     @classmethod
     def load(cls):
         load_dotenv(Path.cwd() / ".env")
@@ -47,4 +61,11 @@ class Settings:
             secure_cookie=os.getenv("SESSION_COOKIE_SECURE", "0") == "1",
             monthly_user_limit=monthly_user_limit,
             extra_models=extra_models,
+            sandbox_enabled=os.getenv("SANDBOX_ENABLED", "0") == "1",
+            sandbox_image=os.getenv("SANDBOX_IMAGE", "roundtable-sandbox"),
+            sandbox_timeout=int(os.getenv("SANDBOX_TIMEOUT", "20")),
+            sandbox_max_parallel=int(os.getenv("SANDBOX_MAX_PARALLEL", "2")),
+            sandbox_max_runs_per_turn=int(os.getenv("SANDBOX_MAX_RUNS_PER_TURN", "5")),
+            sandbox_memory=os.getenv("SANDBOX_MEMORY", "512m"),
+            tool_models=frozenset(part.strip() for part in os.getenv("TOOL_MODELS", "").split(",") if part.strip()),
         )

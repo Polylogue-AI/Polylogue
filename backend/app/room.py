@@ -9,7 +9,8 @@ from .modes.crosscheck import Crosscheck
 from .modes.debate import Debate
 from .modes.pipeline import Pipeline
 from .modes.roundtable import Roundtable
-from .orchestrator import run_room
+from .orchestrator import Output, run_room
+from .sandbox import result, summary
 
 
 def initial_state(room):
@@ -21,12 +22,14 @@ def initial_state(room):
 
 
 def member_from(record):
-    return Member(**{field.name: record[field.name] for field in fields(Member)})
+    return Member(**{field.name: record[field.name] for field in fields(Member) if field.name in record})
 
 
 class Room:
-    def __init__(self, db, record, llm):
+    def __init__(self, db, record, llm, sandbox=None, tool_models=()):
         self.db, self.record, self.llm = db, record, llm
+        self.sandbox, self.tool_models = sandbox, tool_models
+        self.human_runs = {}
         self.id = record["id"]
         self.state = db.get("room_states", self.id) or initial_state(record)
         self.seats = {seat["id"]: seat for seat in record["seats"]}
@@ -107,6 +110,9 @@ class Room:
     def begin_message(self, turn):
         message = self.new_message(turn.member.id, turn.kind, "", streaming=True)
         message.update(round=turn.round, meta=dict(turn.meta))
+        return self.start_message(message)
+
+    def start_message(self, message):
         with self.db.transaction():
             self.db.put_message(message)
         self.active[message["id"]] = message
@@ -117,7 +123,7 @@ class Room:
         message["content"] += delta
         self.broadcast(dict(type="message_delta", id=message["id"], delta=delta))
 
-    def end_message(self, member_id, message, output, *, interrupted=False, meta=None):
+    def end_message(self, member_id, message, output, *, interrupted=False, meta=None, prepaid=False):
         usage = output.usage
         cost = money(usage.cost_cny) if usage and usage.cost_cny is not None else None
         if not usage and message is None:
@@ -127,15 +133,16 @@ class Room:
                            interrupted=interrupted, streaming=False, meta=message["meta"] | (meta or {}))
             self.active.pop(message["id"], None)
         total = money(self.state["cost_cny"])
-        if usage:
+        if usage and not prepaid:
             total += money(cost or 0)
         with self.db.transaction():
             if message is not None:
                 self.db.put_message(message)
-            if usage:
+            if usage and not prepaid:
                 self.db.charge(self.id, self.record["created_by"], member_id, usage)
             if message is not None and message["seq"] == self.seq and message["content"]:
-                self.record["last_preview"] = f"{self.seats[message['author_id']]['name']}：{message['content'][:60]}"
+                person = self.seats.get(message["author_id"]) or self.db.get("users", message["author_id"])
+                self.record["last_preview"] = f"{person['name']}：{message['content'][:60]}"
             self.record.update(cost_cny=float(total), updated_at=now().isoformat())
             self.db.put("rooms", self.id, self.record)
             if cost is not None:
@@ -145,6 +152,56 @@ class Room:
                                 cost_cny=message["cost_cny"], interrupted=interrupted, meta=message["meta"]))
         if total != money(self.state["cost_cny"]):
             self.update(cost_cny=float(total))
+
+    async def run_code(self, author, request, *, reply_to=None, turn=None, usage=None):
+        info = request.model_dump(include={"language", "files", "test"}) | result(self.sandbox.initial_state(request))
+        message = self.new_message(author, "run", "", streaming=True)
+        message["reply_to"] = reply_to
+        message["meta"] = (dict(turn.meta) if turn else {}) | {"run": info}
+        if turn:
+            message["round"] = turn.round
+        self.start_message(message)
+        if usage:
+            self.end_message(author, None, Output(usage=usage))
+
+        def on_start():
+            message["meta"] = message["meta"] | {"run": info | {"status": "running"}}
+
+        def finish(outcome, interrupted=False):
+            content = summary(request, outcome)
+            self.end_message(author, message, Output([content], usage), interrupted=interrupted,
+                             meta={"run": info | outcome}, prepaid=True)
+            return outcome, content
+
+        try:
+            outcome = await self.sandbox.run(request, on_start)
+        except asyncio.CancelledError:
+            finish(result("cancelled", stderr="运行已取消"), interrupted=True)
+            raise
+        except Exception as exc:
+            outcome = result("error", stderr=f"运行器异常：{type(exc).__name__}")
+        return finish(outcome)
+
+    def start_human_run(self, user, event):
+        user_id = user["id"]
+        if self.seats.get(user_id, {}).get("kind") != "human":
+            return "forbidden", "只有房间参与者可以运行代码"
+        if not self.sandbox or not self.sandbox.enabled:
+            return "sandbox_disabled", "沙箱未启用"
+        pending = self.sandbox.people.get(user_id)
+        if pending is not None and not pending.done():
+            return "run_busy", "已有代码正在排队或运行"
+        task = asyncio.create_task(self.run_code(user_id, event, reply_to=event.reply_to))
+        self.sandbox.people[user_id] = self.human_runs[user_id] = task
+
+        def done(finished):
+            if self.sandbox.people.get(user_id) is finished:
+                self.sandbox.people.pop(user_id, None)
+            if self.human_runs.get(user_id) is finished:
+                self.human_runs.pop(user_id, None)
+
+        task.add_done_callback(done)
+        return None
 
     def budget_reason(self):
         if money(self.state["cost_cny"]) >= money(self.state["budget_cny"]):
@@ -156,19 +213,24 @@ class Room:
             return "创建者的本月预算已用完，讨论停止。"
         return None
 
-    def history(self, exclude=(), *, through_round=None):
+    def history(self, exclude=(), *, through_round=None, human_runs_only=False):
         history = []
         pending = set(exclude)
         summarized = self.state["summarized_until_round"]
         for message in self.db.messages(self.id):
-            if (message["kind"] not in {"chat", "summary", "verdict"} or not message["content"] or
+            if (message["kind"] not in {"chat", "summary", "verdict", "run"} or not message["content"] or
                     message["id"] in pending or (summarized and message["round"] <= summarized) or
                     (through_round is not None and message["round"] > through_round)):
                 continue
             seat = self.seats.get(message["author_id"]) or self.db.get("users", message["author_id"])
             if seat:
+                if human_runs_only and (message["kind"] != "run" or seat.get("kind") != "human"):
+                    continue
                 name = seat["name"] if seat.get("role") is None else f"{seat['name']}（{seat['role']}）"
-                history.append((seat["id"], name, message["content"]))
+                if message["kind"] == "run":
+                    history.append(("", f"{seat['name']} 运行了代码", message["content"]))
+                else:
+                    history.append((seat["id"], name, message["content"]))
         return history
 
     def context_summary(self):
@@ -255,10 +317,14 @@ class Room:
             self.update(status="error", speaker_id=None, next_speaker_id=None)
 
     async def stop(self):
+        human_runs = list(self.human_runs.values())
+        for task in human_runs:
+            task.cancel()
         if self.task and not self.task.done():
             self.task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.task
+        await asyncio.gather(*human_runs, return_exceptions=True)
         for queue in self.clients:
             queue.put_nowait(None)
 
@@ -266,6 +332,8 @@ class Room:
         if self.deleting:
             return "not_found", "房间不存在"
         kind = event.type
+        if kind == "run":
+            return self.start_human_run(user, event)
         if kind == "say":
             message = self.add_message(user["id"], "chat", event.content,
                                        mentions=event.mentions, client_id=event.client_id)

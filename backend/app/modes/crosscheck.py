@@ -54,12 +54,15 @@ class Crosscheck:
     async def run(self, flow):
         flow.mode_state(phase="answer")
         answers = await flow.play([
-            Turn(member, 1, goal="独立回答主题，说明依据和不确定之处。不要署名。",
+            Turn(member, 1, goal="独立回答主题，说明依据和不确定之处。不要署名。", allow_tools=True,
                  meta={"phase": "answer", "anon_label": answer_label(index)}, private_history=())
             for index, member in enumerate(self.answerers)
         ], concurrent=True)
-        anonymous = [(index, answer_label(index), self.anonymous(answer.content))
-                     for index, answer in enumerate(answers) if answer]
+        anonymous = []
+        for index, answer in enumerate(answers):
+            if answer:
+                contents = [answer.content, *(f"[运行了代码] {content}" for _, _, content in answer.runs)]
+                anonymous.append((index, answer_label(index), self.anonymous("\n\n".join(contents))))
         if not anonymous:
             return False
 

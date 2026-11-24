@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -37,6 +37,7 @@ class MemberInput(Input):
     max_chars: MaxChars | None
     monthly_budget_cny: Cost | None
     can_mention: bool
+    can_run_code: bool = False
 
 
 class MemberPatch(Input):
@@ -50,6 +51,7 @@ class MemberPatch(Input):
     max_chars: MaxChars | None = None
     monthly_budget_cny: Cost | None = None
     can_mention: bool | None = None
+    can_run_code: bool | None = None
 
     @model_validator(mode="after")
     def check_nulls(self):
@@ -86,6 +88,27 @@ class Say(Input):
 class Steer(Input):
     type: Literal["steer"]
     content: Annotated[str, Field(min_length=1)]
+
+
+class RunFile(Input):
+    path: str
+    content: str
+
+
+class RunInput(Input):
+    language: Literal["python", "node", "html"]
+    files: list[RunFile]
+    test: str | None = None
+
+    @field_validator("test")
+    @classmethod
+    def omit_blank_test(cls, test):
+        return test if test and test.strip() else None
+
+
+class RunEvent(RunInput):
+    type: Literal["run"]
+    reply_to: str | None = None
 
 
 class Action(Input):

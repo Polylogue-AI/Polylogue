@@ -12,10 +12,11 @@ from .auth import ApiError, new_user
 from .config import Settings
 from .db import Store, now
 from .llm import FakeLLM, LiteLLM, anthropic_endpoint
+from .sandbox import FakeSandbox, Sandbox
 from .ws import ws
 
 
-def create_app(settings: Settings | None = None, llm=None):
+def create_app(settings: Settings | None = None, llm=None, sandbox=None):
     @asynccontextmanager
     async def lifespan(app):
         state = app.state
@@ -35,17 +36,23 @@ def create_app(settings: Settings | None = None, llm=None):
                     db.put("settings", "fake_seeded", True)
             with db.transaction():
                 for record in db.list("rooms"):
-                    if record["status"] not in {"running", "paused"}:
-                        continue
-                    saved = db.get("room_states", record["id"])
-                    saved.update(status="error", speaker_id=None, next_speaker_id=None)
-                    db.put("room_states", record["id"], saved)
-                    db.put("rooms", record["id"], dict(record, status="error", updated_at=now().isoformat()))
+                    if record["status"] in {"running", "paused"}:
+                        saved = db.get("room_states", record["id"])
+                        saved.update(status="error", speaker_id=None, next_speaker_id=None)
+                        db.put("room_states", record["id"], saved)
+                        db.put("rooms", record["id"], dict(record, status="error", updated_at=now().isoformat()))
                     for message in db.messages(record["id"]):
                         if message["streaming"]:
+                            if message["kind"] == "run":
+                                message["meta"]["run"].update(status="cancelled", stderr="后端重启，运行已终止")
+                                message["content"] = "后端重启，运行已终止。"
                             db.put_message(dict(message, streaming=False, interrupted=True))
             state.llm = llm if llm is not None else (FakeLLM(delay=settings_now.fake_delay) if settings_now.fake
                                                      else LiteLLM(settings_now.usd_cny_rate))
+            state.sandbox = sandbox if sandbox is not None else (
+                FakeSandbox(settings_now) if settings_now.fake else Sandbox(settings_now)
+            )
+            await state.sandbox.start()
             if isinstance(state.llm, LiteLLM):
                 logging.getLogger("uvicorn.error").info("Anthropic API：%s", anthropic_endpoint())
             yield

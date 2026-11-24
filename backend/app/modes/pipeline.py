@@ -64,7 +64,7 @@ class Pipeline:
         def execute(task, executor, history=plan_history):
             return Turn(executor, max(1, task["rework_count"]), meta={"task_id": task["id"]},
                         goal=f"完成这项任务：{task['title']}。有审查退回意见时，修正其中指出的问题。直接提交可用的结果。",
-                        private_history=history)
+                        private_history=history, allow_tools=True)
 
         def completed(index, output):
             task, _ = work[index]
@@ -80,14 +80,16 @@ class Pipeline:
         findings = []
         for (task, executor), draft in zip(work, drafts):
             task_history = list(plan_history)
+            task_runs = []
             while draft:
                 current_draft = (executor.id, "待审稿件", draft.content)
-                task_history.append(current_draft)
+                task_runs.extend(draft.runs)
+                task_history.extend((*draft.runs, current_draft))
                 task.update(stage="review", status="running")
                 self.publish(flow)
                 review = await flow.one(Turn(
                     self.reviewer, max(1, task["rework_count"]), meta={"task_id": task["id"]}, parse=read_verdict,
-                    private_history=(*plan_history, current_draft),
+                    private_history=(*plan_history, *task_runs, current_draft),
                     system_prompt_override=f"你是{self.reviewer.name}，本轮担任流水线审查者。",
                     goal='给出审查结论。仅返回 JSON {"verdict":"approved 或 needs_fix","comment":"审查意见"}。'
                          "只有任务未完成、存在事实错误或方案无法执行时，才给 needs_fix 并写明原因。"

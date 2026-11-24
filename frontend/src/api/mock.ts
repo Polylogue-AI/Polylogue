@@ -6,8 +6,8 @@
  */
 import type { Api, ConnectOptions, RoomConnection } from './client'
 import type {
-  AiMember, ClientEvent, CreateRoomInput, Duty, Invite, Message, MessageKind, MessageMeta, ModelOption,
-  PipeTask, Room, RoomState, RoomSummary, Seat, ServerEvent, Usage, User,
+  AiMember, ClientEvent, CodeRun, CreateRoomInput, Duty, Invite, Message, MessageKind, MessageMeta, ModelOption,
+  PipeTask, Room, RoomState, RoomSummary, RunLanguage, Seat, ServerEvent, Usage, User,
 } from './types'
 import { ApiError } from './types'
 
@@ -21,25 +21,25 @@ const users: User[] = [
 ]
 
 const models: ModelOption[] = [
-  { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', available: true, supports_temperature: false },
-  { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', available: true, supports_temperature: false },
-  { id: 'anthropic/claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'anthropic', available: true, supports_temperature: false },
-  { id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', available: true, supports_temperature: false },
-  { id: 'openai/gpt-5-mini', label: 'GPT-5 mini', provider: 'openai', available: true, supports_temperature: false },
-  { id: 'gemini/gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'gemini', available: false, supports_temperature: true },
-  { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', provider: 'deepseek', available: true, supports_temperature: true },
-  { id: 'dashscope/qwen-max', label: 'Qwen Max', provider: 'dashscope', available: true, supports_temperature: true },
-  { id: 'ollama/llama3.1:8b', label: 'Llama 3.1 8B（本地）', provider: 'ollama', available: true, supports_temperature: true },
+  { id: 'anthropic/claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic', available: true, supports_temperature: false, supports_tools: true },
+  { id: 'anthropic/claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic', available: true, supports_temperature: false, supports_tools: true },
+  { id: 'anthropic/claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'anthropic', available: true, supports_temperature: false, supports_tools: true },
+  { id: 'openai/gpt-5', label: 'GPT-5', provider: 'openai', available: true, supports_temperature: false, supports_tools: true },
+  { id: 'openai/gpt-5-mini', label: 'GPT-5 mini', provider: 'openai', available: true, supports_temperature: false, supports_tools: true },
+  { id: 'gemini/gemini-2.5-pro', label: 'Gemini 2.5 Pro', provider: 'gemini', available: false, supports_temperature: true, supports_tools: true },
+  { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat', provider: 'deepseek', available: true, supports_temperature: true, supports_tools: true },
+  { id: 'dashscope/qwen-max', label: 'Qwen Max', provider: 'dashscope', available: true, supports_temperature: true, supports_tools: true },
+  { id: 'ollama/llama3.1:8b', label: 'Llama 3.1 8B（本地）', provider: 'ollama', available: true, supports_temperature: true, supports_tools: false },
 ]
 
 const ANTI_ECHO = '必须指出至少一个前面的人没有提到的问题。'
 let members: AiMember[] = [
-  { id: 'ai_claude', name: 'Claude', short: 'C', color: '#C9842F', model: 'anthropic/claude-opus-5-5', role: '产品顾问', system_prompt: '你是产品顾问。先判断用户真正要解决的问题，再给建议。' + ANTI_ECHO, temperature: 0.6, max_chars: 300, monthly_budget_cny: 40, can_mention: false, month_cost_cny: 31.4 },
-  { id: 'ai_gpt', name: 'GPT', short: 'G', color: '#14996F', model: 'openai/gpt-5', role: '工程评估', system_prompt: '你是工程评估。从实现难度、时间、维护成本三个方面评估方案，给出具体的工作量估计。', temperature: 0.4, max_chars: 300, monthly_budget_cny: 40, can_mention: false, month_cost_cny: 22.85 },
-  { id: 'ai_gemini', name: 'Gemini', short: 'Ge', color: '#3C78F0', model: 'gemini/gemini-2.5-pro', role: '用户研究', system_prompt: '你是用户研究员。用真实用户行为和数据说话，没有数据时明确说"这是假设"。', temperature: 0.7, max_chars: 300, monthly_budget_cny: 30, can_mention: false, month_cost_cny: 9.6 },
-  { id: 'ai_deepseek', name: 'DeepSeek', short: 'D', color: '#36458F', model: 'deepseek/deepseek-chat', role: '唱反调', system_prompt: '你是唱反调的人。找出前面所有观点里最薄弱的地方并反驳，不要附和任何人。', temperature: 0.9, max_chars: 300, monthly_budget_cny: 15, can_mention: true, month_cost_cny: 5.22 },
-  { id: 'ai_qwen', name: 'Qwen', short: 'Q', color: '#8659E8', model: 'dashscope/qwen-max', role: '中文写作', system_prompt: '你负责中文写作。语言简洁、准确，避免空话和套话，术语前后统一。', temperature: 0.5, max_chars: 600, monthly_budget_cny: 15, can_mention: false, month_cost_cny: 3.18 },
-  { id: 'ai_llama', name: 'Llama 本地', short: 'L', color: '#3A3A3E', model: 'ollama/llama3.1:8b', role: '草稿员', system_prompt: '你是草稿员。快速写出第一版，不追求完美，后面会有人审查。', temperature: 0.8, max_chars: null, monthly_budget_cny: null, can_mention: false, month_cost_cny: 0 },
+  { id: 'ai_claude', name: 'Claude', short: 'C', color: '#C9842F', model: 'anthropic/claude-opus-5-5', role: '产品顾问', system_prompt: '你是产品顾问。先判断用户真正要解决的问题，再给建议。' + ANTI_ECHO, temperature: 0.6, max_chars: 300, monthly_budget_cny: 40, can_mention: false, can_run_code: false, month_cost_cny: 31.4 },
+  { id: 'ai_gpt', name: 'GPT', short: 'G', color: '#14996F', model: 'openai/gpt-5', role: '工程评估', system_prompt: '你是工程评估。从实现难度、时间、维护成本三个方面评估方案，给出具体的工作量估计。', temperature: 0.4, max_chars: 300, monthly_budget_cny: 40, can_mention: false, can_run_code: true, month_cost_cny: 22.85 },
+  { id: 'ai_gemini', name: 'Gemini', short: 'Ge', color: '#3C78F0', model: 'gemini/gemini-2.5-pro', role: '用户研究', system_prompt: '你是用户研究员。用真实用户行为和数据说话，没有数据时明确说"这是假设"。', temperature: 0.7, max_chars: 300, monthly_budget_cny: 30, can_mention: false, can_run_code: false, month_cost_cny: 9.6 },
+  { id: 'ai_deepseek', name: 'DeepSeek', short: 'D', color: '#36458F', model: 'deepseek/deepseek-chat', role: '唱反调', system_prompt: '你是唱反调的人。找出前面所有观点里最薄弱的地方并反驳，不要附和任何人。', temperature: 0.9, max_chars: 300, monthly_budget_cny: 15, can_mention: true, can_run_code: false, month_cost_cny: 5.22 },
+  { id: 'ai_qwen', name: 'Qwen', short: 'Q', color: '#8659E8', model: 'dashscope/qwen-max', role: '中文写作', system_prompt: '你负责中文写作。语言简洁、准确，避免空话和套话，术语前后统一。', temperature: 0.5, max_chars: 600, monthly_budget_cny: 15, can_mention: false, can_run_code: false, month_cost_cny: 3.18 },
+  { id: 'ai_llama', name: 'Llama 本地', short: 'L', color: '#3A3A3E', model: 'ollama/llama3.1:8b', role: '草稿员', system_prompt: '你是草稿员。快速写出第一版，不追求完美，后面会有人审查。', temperature: 0.8, max_chars: null, monthly_budget_cny: null, can_mention: false, can_run_code: false, month_cost_cny: 0 },
 ]
 
 /** 每个字的模拟价格（元） */
@@ -265,6 +265,21 @@ function buildScript(room: Room, duties: Record<string, Duty>): Turn[] {
 
 /* ---------------- 房间引擎 ---------------- */
 
+/** 模拟沙箱：规则同后端的 FakeSandbox，代码不会真正执行 */
+function fakeRun(code: string): Partial<CodeRun> {
+  if (/while\s*\(?\s*true/i.test(code)) return { status: 'timeout', duration_ms: 20000 }
+  if (/\braise\b|\bthrow\b/.test(code)) return { status: 'error', exit_code: 1, stderr: 'Traceback (most recent call last):\n  File "main.py", line 3\nValueError: 模拟异常', duration_ms: 412 }
+  const printed = [...code.matchAll(/(?:print|console\.log)\((['"`])(.*?)\1/g)].map((m) => m[2])
+  return { status: 'ok', exit_code: 0, stdout: printed.length ? printed.join('\n') : '（模拟模式不会真正执行代码）', duration_ms: 386 }
+}
+
+function runSummary(r: CodeRun): string {
+  const st = r.exit_code != null ? `退出码 ${r.exit_code}` : ({ timeout: '超时', cancelled: '已取消', unavailable: '环境不可用' } as Record<string, string>)[r.status] ?? r.status
+  const log = [r.stdout, r.stderr].filter(Boolean).join('\n')
+  const fence = '```'
+  return `运行 ${r.language} ${r.files[0]?.path ?? ''}：${st}${r.duration_ms != null ? `，用时 ${r.duration_ms / 1000} 秒` : ''}${log ? `\n${fence}text\n${log}\n${fence}` : ''}`
+}
+
 class Engine {
   room: Room
   duties: Record<string, Duty>
@@ -336,6 +351,24 @@ class Engine {
   }
 
   /* ---- 客户端事件 ---- */
+  runningBy = new Set<string>()
+
+  runCode(user: User, e: Extract<ClientEvent, { type: 'run' }>) {
+    if (this.runningBy.has(user.id)) return this.emit({ type: 'error', code: 'run_busy', message: '你上一段代码还在运行，请稍等' })
+    this.runningBy.add(user.id)
+    const run: CodeRun = { language: e.language, files: e.files, test: e.test?.trim() ? e.test : null, status: 'running', exit_code: null,
+      stdout: '', stderr: '', console: [], page_errors: [], truncated: false, duration_ms: null }
+    const m = this.newMessage(user.id, 'run', '', { streaming: true, reply_to: e.reply_to ?? null, meta: { run } })
+    this.emit({ type: 'message_start', message: m })
+    setTimeout(() => {
+      Object.assign(run, fakeRun(e.files[0]?.content ?? ''))
+      m.streaming = false
+      m.content = runSummary(run)
+      this.runningBy.delete(user.id)
+      this.emit({ type: 'message_end', id: m.id, content: m.content, cost_cny: null, interrupted: false, meta: m.meta })
+    }, 900)
+  }
+
   handle(user: User, e: ClientEvent) {
     switch (e.type) {
       case 'say': {
@@ -353,6 +386,7 @@ class Engine {
         this.emit({ type: 'message', message: m })
         break
       }
+      case 'run': this.runCode(user, e); break
       case 'start': this.start(); break
       case 'pause':
         if (this.state.status !== 'running') return
@@ -513,6 +547,52 @@ function seed() {
     e.room.status = 'paused'
     engines.set(room.id, e)
   }
+  // 5. 圆桌：已结束，发言里有可运行的 HTML 代码（测试"运行预览"）
+  {
+    const { room, duties } = makeRoom({ id: 'r_game', title: '小游戏：10 秒点击挑战', topic: '写一个单文件网页小游戏：10 秒内尽量多点按钮，记录最高分。', mode: 'round', ais: ['ai_gpt', 'ai_claude'], humans: ['u_lin'], rounds: 1, budget: 2, createdBy: 'u_lin' })
+    const html = [
+      '<!DOCTYPE html>',
+      '<html lang="zh">',
+      '<head><meta charset="utf-8"><title>点击挑战</title></head>',
+      '<body>',
+      '  <h1>10 秒点击挑战</h1>',
+      '  <p>得分 <b id="score">0</b>　最高 <b id="best">0</b>　剩余 <b id="left">10</b> 秒</p>',
+      '  <button id="start">开始</button> <button id="hit" disabled>点我！</button>',
+      '  <script>',
+      "    const best = document.getElementById('best')",
+      "    best.textContent = localStorage.getItem('best') || 0",
+      '    let score = 0, timer = null',
+      "    document.getElementById('start').onclick = () => {",
+      "      score = 0; let left = 10; hit.disabled = false",
+      '      timer = setInterval(() => {',
+      "        left--; document.getElementById('left').textContent = left",
+      "        if (left <= 0) { clearInterval(timer); hit.disabled = true; saveBest() }",
+      '      }, 1000)',
+      "      console.log('游戏开始')",
+      '    }',
+      "    document.getElementById('hit').onclick = () => { score++; document.getElementById('score').textContent = score }",
+      "    function saveBest() { if (score > Number(best.textContent)) { localStorage.setItem('best', score); best.textContent = score } }",
+      "    document.getElementById('restart').onclick = () => location.reload()",
+      '  </script>',
+      '</body>',
+      '</html>',
+    ].join('\n')
+    const css = 'body { font-family: system-ui; text-align: center; padding-top: 40px }\nbutton { font-size: 18px; padding: 8px 20px; margin: 4px }'
+    const t: Turn[] = [
+      { speaker: 'ai_gpt', before: (e) => e.setRound(1), text: '下面是完整的单文件实现，开始后 10 秒内点"点我！"，结束时把最高分存进 localStorage：\n\n```html\n' + html + '\n```\n\n样式可以单独放：\n\n```css\n' + css + '\n```' },
+      (() => {
+        const run: CodeRun = { language: 'python', files: [{ path: 'main.py', content: 'scores = [3, 5, 4]\nprint("平均", sum(scores) / len(scores))\nprint("最高", max(scores))' }],
+          test: null, status: 'ok', exit_code: 0, stdout: '平均 4.0\n最高 5', stderr: '', console: [], page_errors: [], truncated: false, duration_ms: 412 }
+        return { speaker: 'ai_claude', kind: 'run' as const, meta: { run }, text: runSummary(run) }
+      })(),
+      { speaker: 'ai_claude', text: '代码里绑定了一个不存在的 `#restart` 按钮，会在加载时报错。建议先运行看看。另外这段计算可以单独试：\n\n```js\nconst clicks = [3, 5, 4]\nconsole.log("平均每秒", clicks.reduce((a, b) => a + b) / clicks.length)\nconsole.warn("样本太少")\n```' },
+    ]
+    const e = new Engine(room, duties, t)
+    e.fastForward(t.length)
+    e.state.status = 'finished'
+    e.room.status = 'finished'
+    engines.set(room.id, e)
+  }
 }
 seed()
 // 让正在进行的种子房间继续跑
@@ -554,6 +634,7 @@ export const mockApi: Api = {
   async logout() { localStorage.removeItem('rt_mock_user') },
   async users() { return delay(users) },
   async models() { return delay(models) },
+  async sandbox() { return delay({ enabled: true, available: true, languages: ['python', 'node', 'html'] as RunLanguage[], reason: null }) },
   async members() { return delay(members) },
   async createMember(input) {
     const m: AiMember = { ...input, id: uid('ai_'), month_cost_cny: 0 }

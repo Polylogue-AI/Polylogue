@@ -1,6 +1,6 @@
 import type {
   AiMember, AiMemberInput, ClientEvent, CreateRoomInput, Invite, ModelOption, Room, RoomSummary,
-  ServerEvent, Usage, UsageRange, User,
+  SandboxStatus, ServerEvent, Usage, UsageRange, User,
 } from './types'
 import { ApiError } from './types'
 
@@ -24,6 +24,7 @@ export interface Api {
   logout(): Promise<void>
   users(): Promise<User[]>
   models(): Promise<ModelOption[]>
+  sandbox(): Promise<SandboxStatus>
   members(): Promise<AiMember[]>
   createMember(input: AiMemberInput): Promise<AiMember>
   updateMember(id: string, patch: Partial<AiMemberInput>): Promise<AiMember>
@@ -106,6 +107,7 @@ export const httpApi: Api = {
   logout: () => req('POST', '/api/auth/logout'),
   users: () => req('GET', '/api/users'),
   models: () => req('GET', '/api/models'),
+  sandbox: () => req('GET', '/api/sandbox'),
   members: () => req('GET', '/api/members'),
   createMember: (input) => req('POST', '/api/members', input),
   updateMember: (id, patch) => req('PATCH', `/api/members/${id}`, patch),

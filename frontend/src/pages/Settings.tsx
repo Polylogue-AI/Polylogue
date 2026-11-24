@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Invite, type ModelOption } from '../api'
+import { api, type Invite, type ModelOption, type SandboxStatus } from '../api'
 import { Avatar } from '../components/Avatar'
 import { Icon } from '../components/Icon'
 import { useSession } from '../state/session'
@@ -20,6 +20,7 @@ export function SettingsPage() {
   const { user, users } = useSession()
   const toast = useToast()
   const [models, setModels] = useState<ModelOption[]>([])
+  const [sandbox, setSandbox] = useState<SandboxStatus | null>(null)
   const [invites, setInvites] = useState<Invite[] | null>(null)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
@@ -27,6 +28,7 @@ export function SettingsPage() {
 
   const loadInvites = useCallback(() => api.invites().then(setInvites).catch((e) => toast(e.message)), [toast])
   useEffect(() => { api.models().then(setModels).catch(() => {}) }, [])
+  useEffect(() => { api.sandbox().then(setSandbox).catch(() => {}) }, [])
   useEffect(() => { if (user?.is_admin) loadInvites() }, [user, loadInvites])
 
   const providers = [...new Set(models.map((m) => m.provider))]
@@ -86,6 +88,29 @@ export function SettingsPage() {
           </div>
           <p className="group-note">
             <Icon name="warn" size={13} style={{ verticalAlign: -2 }} /> API Key 只保存在服务器的 <code>backend/.env</code> 里，浏览器拿不到。要添加或更换 Key，请编辑服务器上的这个文件后重启后端。
+          </p>
+        </div>
+
+        <div className="settings-sec">
+          <h2 className="settings-h">代码运行</h2>
+          <div className="group">
+            <div className="group-row">
+              <span className="provider-logo" style={{ background: 'var(--ink-2)' }}>&lt;/&gt;</span>
+              <div className="grow">
+                Docker 沙箱
+                <small>{!sandbox ? '检测中…'
+                  : sandbox.available ? `可运行：${sandbox.languages.map((l) => ({ python: 'Python', node: 'Node.js', html: '网页' })[l]).join('、')}`
+                  : sandbox.enabled ? sandbox.reason ?? '暂不可用'
+                  : '未启用。在 backend/.env 里设置 SANDBOX_ENABLED=1 并重启后端'}</small>
+              </div>
+              <span className="key-state">
+                <i style={{ background: sandbox?.available ? 'var(--ok)' : sandbox?.enabled ? 'var(--bad)' : 'var(--ink-4, #C7C7CC)' }} />
+                {!sandbox ? '' : sandbox.available ? '可用' : sandbox.enabled ? '不可用' : '未启用'}
+              </span>
+            </div>
+          </div>
+          <p className="group-note">
+            每次运行都在一个新的隔离容器里进行：不能联网，限时、限内存，用完即删。要让某位模型成员自己运行代码，在"成员"页打开它的"允许运行代码"。
           </p>
         </div>
 

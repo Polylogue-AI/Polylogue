@@ -4,6 +4,8 @@ frontend/.env
 backend/.env
 __pycache__/
 *.db
+*.db-shm
+*.db-wal
 backend/.venv/
 *.egg-info/
 .pytest_cache/

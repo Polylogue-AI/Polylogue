@@ -1,4 +1,4 @@
-// 与 docs/03-接口契约.md v0.5 逐字段对应。两者冲突时以契约为准。
+// 与 docs/03-接口契约.md v0.7 逐字段对应。两者冲突时以契约为准。
 
 export interface Invite {
   code: string
@@ -31,6 +31,7 @@ export interface AiMember {
   max_chars: number | null
   monthly_budget_cny: number | null
   can_mention: boolean
+  can_run_code: boolean
   month_cost_cny: number
 }
 export type AiMemberInput = Omit<AiMember, 'id' | 'month_cost_cny'>
@@ -41,6 +42,7 @@ export interface ModelOption {
   provider: string
   available: boolean
   supports_temperature: boolean  // false 时成员页禁用温度滑杆（契约 v0.5）
+  supports_tools: boolean        // false 时成员页禁用"允许运行代码"（契约 v0.6）
 }
 
 export type Duty =
@@ -107,7 +109,31 @@ export interface RoomState {
   mode_state: ModeState
 }
 
-export type MessageKind = 'chat' | 'summary' | 'verdict' | 'steer' | 'system'
+export type MessageKind = 'chat' | 'summary' | 'verdict' | 'steer' | 'system' | 'run'
+
+// 代码运行（契约第 4 节）
+export type RunLanguage = 'python' | 'node' | 'html'
+export interface RunFile { path: string; content: string }
+export type RunStatus = 'queued' | 'running' | 'ok' | 'error' | 'timeout' | 'cancelled' | 'unavailable'
+export interface CodeRun {
+  language: RunLanguage
+  files: RunFile[]
+  test: string | null
+  status: RunStatus
+  exit_code: number | null
+  stdout: string
+  stderr: string
+  console: { level: 'log' | 'info' | 'warn' | 'error'; text: string }[]
+  page_errors: string[]
+  truncated: boolean
+  duration_ms: number | null
+}
+export interface SandboxStatus {
+  enabled: boolean
+  available: boolean
+  languages: RunLanguage[]
+  reason: string | null
+}
 
 export interface MessageMeta {
   task_id?: string
@@ -117,6 +143,7 @@ export interface MessageMeta {
   side?: 'pro' | 'con' | 'judge'
   agreements?: string[]
   disagreements?: string[]
+  run?: CodeRun
 }
 
 export interface Message {
@@ -169,6 +196,7 @@ export type ClientEvent =
   | { type: 'resume' }
   | { type: 'interrupt' }
   | { type: 'skip' }
+  | { type: 'run'; language: RunLanguage; files: RunFile[]; test?: string; reply_to?: string }
 
 export type ServerEvent =
   | { type: 'snapshot'; messages: Message[]; state: RoomState; online: string[] }

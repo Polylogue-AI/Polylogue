@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type AiMember, type AiMemberInput, type ModelOption } from '../api'
+import { api, type AiMember, type AiMemberInput, type ModelOption, type SandboxStatus } from '../api'
 import { Avatar } from '../components/Avatar'
 import { Icon } from '../components/Icon'
 import { yuan } from '../labels'
@@ -27,8 +27,10 @@ export function MembersPage() {
   const [form, setForm] = useState<AiMemberInput | null>(null)
   const [busy, setBusy] = useState(false)
   const [custom, setCustom] = useState(false)
+  const [sandbox, setSandbox] = useState<SandboxStatus | null>(null)
 
   useEffect(() => { api.models().then(setModels).catch(() => {}) }, [])
+  useEffect(() => { api.sandbox().then(setSandbox).catch(() => {}) }, [])
   useEffect(() => { if (!cur && members.length) setCur(members[0].id) }, [members, cur])
   const m = members.find((x) => x.id === cur) ?? null
   useEffect(() => {
@@ -52,21 +54,27 @@ export function MembersPage() {
     } catch (e) { toast((e as Error).message) } finally { setBusy(false) }
   }
   async function add() {
-    const first = models.find((x) => x.available)
-    const created: AiMember = await api.createMember({
-      name: '新成员', short: '新', color: COLORS[members.length % COLORS.length], model: first?.id ?? '', role: '产品顾问',
-      system_prompt: PRESETS['产品顾问'], temperature: 0.6, max_chars: 300, monthly_budget_cny: 20, can_mention: false,
-    })
-    await refresh()
-    setCur(created.id)
-    toast('已添加新成员，先给它起个名字')
+    // 优先选可用的模型；一个可用的都没有（例如后端刚启动还没检测过）时退回列表第一个
+    const first = models.find((x) => x.available) ?? models[0]
+    if (!first) return toast('模型列表还没加载出来，请稍后再试')
+    try {
+      const created: AiMember = await api.createMember({
+        name: '新成员', short: '新', color: COLORS[members.length % COLORS.length], model: first.id, role: '产品顾问',
+        system_prompt: PRESETS['产品顾问'], temperature: 0.6, max_chars: 300, monthly_budget_cny: 20, can_mention: false, can_run_code: false,
+      })
+      await refresh()
+      setCur(created.id)
+      toast('已添加新成员，先给它起个名字、选好模型')
+    } catch (e) { toast((e as Error).message) }
   }
   async function remove() {
     if (!m || !confirm(`确定删除 ${m.name}？已有房间里的发言会保留。`)) return
-    await api.deleteMember(m.id)
-    setCur(null)
-    await refresh()
-    toast('已删除')
+    try {
+      await api.deleteMember(m.id)
+      setCur(null)
+      await refresh()
+      toast('已删除')
+    } catch (e) { toast((e as Error).message) }
   }
 
   const model = models.find((x) => x.id === form?.model)
@@ -74,6 +82,11 @@ export function MembersPage() {
   const manual = custom || (!!form && !!form.model && !model)
   // 后端没给这个字段时按支持处理
   const noTemp = model?.supports_temperature === false
+  // 不能打开"允许运行代码"的原因；已经打开的仍可关闭
+  const runBlock = !sandbox ? '正在检测运行环境…'
+    : !sandbox.enabled ? '服务器没有启用代码运行（backend/.env 里的 SANDBOX_ENABLED）'
+    : manual ? null
+    : model?.supports_tools === false ? '这个模型不支持工具调用，不能运行代码' : null
   return (
     <section className="view">
       <div className="page">
@@ -172,6 +185,18 @@ export function MembersPage() {
                   <div className="setting-line">
                     <div><b>允许主动 @ 其他模型</b><span>打开后它可以直接向别的模型提问（M3 起生效）</span></div>
                     <button className="toggle" role="switch" aria-checked={form.can_mention} aria-label="允许主动 @ 其他模型" onClick={() => set('can_mention', !form.can_mention)} />
+                  </div>
+                  <div className="setting-line">
+                    <div>
+                      <b>允许运行代码</b>
+                      <span>
+                        {runBlock && !form.can_run_code ? runBlock
+                          : '发言时可以在隔离的沙箱里运行 Python、Node.js 和网页，看到结果再继续写。不能联网，不额外收费，但多轮调用会增加模型费用'}
+                        {sandbox?.enabled && !sandbox.available && <><br /><span className="error-text">运行环境暂不可用：{sandbox.reason}</span></>}
+                      </span>
+                    </div>
+                    <button className="toggle" role="switch" aria-checked={form.can_run_code} aria-label="允许运行代码"
+                      disabled={!!runBlock && !form.can_run_code} onClick={() => set('can_run_code', !form.can_run_code)} />
                   </div>
                 </div>
               </fieldset>

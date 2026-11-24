@@ -7,7 +7,8 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from os import environ, getenv
-from typing import Protocol, TypedDict
+from threading import Lock
+from typing import NotRequired, Protocol, TypedDict
 from urllib.parse import quote, quote_plus, urlsplit
 
 
@@ -18,6 +19,11 @@ def supports_temperature(model: str) -> bool:
     if provider == "openai":
         return not (name.startswith("gpt-5") or re.match(r"o[0-9]+(?:-|$)", name))
     return True
+
+
+def supports_tools(llm, model: str, overrides=()) -> bool:
+    capability = getattr(llm, "supports_tools", None)
+    return model in overrides or (capability is not None and capability(model))
 
 
 def model_error_detail(error: Exception) -> str:
@@ -47,6 +53,8 @@ def anthropic_endpoint() -> str:
 class ChatMessage(TypedDict):
     role: str
     content: str
+    tool_calls: NotRequired[list[dict]]
+    tool_call_id: NotRequired[str]
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,7 @@ class ChatStream(AsyncIterator[str]):
     def __init__(self, iterate: Callable[["ChatStream"], AsyncGenerator[str, None]]) -> None:
         self.usage: Usage | None = None
         self.truncated = False
+        self.tool_calls: list[dict] = []
         self._iterator = iterate(self)
 
     async def __anext__(self) -> str:
@@ -74,7 +83,7 @@ class ChatStream(AsyncIterator[str]):
 class LLM(Protocol):
     async def stream_chat(
         self, model: str, messages: list[ChatMessage], temperature: float,
-        max_tokens: int | None,
+        max_tokens: int | None, *, tools: list[dict] | None = None,
     ) -> ChatStream: ...
 
 
@@ -88,19 +97,63 @@ class LiteLLM:
         self.usd_cny_rate = usd_cny_rate
         self.checks: dict[str, bool] = {}
         self.provider_checks: dict[str, bool] = {}
+        self.tool_capabilities: dict[str, bool] = {}
+        self.tool_capability_lock = Lock()
 
     def record_check(self, model, available):
         self.checks[model] = available
         self.provider_checks[model.partition("/")[0]] = available
 
     def provider_available(self, model, provider):
-        if not self.provider_checks.get(provider, False):
-            return False
+        checked = self.provider_checks.get(provider)
         if provider in {"ollama", "ollama_chat"}:
-            return True
+            return checked is True
+        if checked is False:
+            return False
         from litellm import validate_environment
 
-        return bool(validate_environment(model).get("keys_in_environment"))
+        try:
+            return bool(validate_environment(model).get("keys_in_environment"))
+        except Exception:
+            return False
+
+    def supports_tools(self, model):
+        if model.partition("/")[0] in {"ollama", "ollama_chat"}:
+            # Ollama capability discovery contacts the local service. Use TOOL_MODELS to opt in.
+            return False
+        from litellm import supports_function_calling
+
+        with self.tool_capability_lock:
+            if model not in self.tool_capabilities:
+                try:
+                    self.tool_capabilities[model] = bool(supports_function_calling(model=model))
+                except Exception:
+                    self.tool_capabilities[model] = False
+            return self.tool_capabilities[model]
+
+    def estimate_usage(self, model, messages, content, calls, tools):
+        from litellm import cost_per_token, token_counter
+
+        from .context import estimate_tokens
+
+        request = list(messages)
+        if tools:
+            request.append({"role": "system", "content": json.dumps(tools, ensure_ascii=False)})
+        output = content + (json.dumps(calls, ensure_ascii=False) if calls else "")
+        try:
+            tokens_in = token_counter(model=model, messages=request)
+            tokens_out = token_counter(model=model, text=output)
+        except Exception:
+            tokens_in = estimate_tokens(request)
+            tokens_out = estimate_tokens([{"content": output}]) if output else 0
+        try:
+            costs = cost_per_token(model=model, prompt_tokens=tokens_in, completion_tokens=tokens_out)
+            cost = (sum(Decimal(str(amount)) for amount in costs) * self.usd_cny_rate).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP,
+            )
+        except Exception:
+            cost = None  # Unknown pricing is distinct from a zero-cost call.
+        return Usage(tokens_in, tokens_out, cost)
 
     def count_tokens(self, model, messages):
         import litellm
@@ -136,7 +189,7 @@ class LiteLLM:
 
     async def stream_chat(
         self, model: str, messages: list[ChatMessage], temperature: float,
-        max_tokens: int | None,
+        max_tokens: int | None, *, tools: list[dict] | None = None,
     ) -> ChatStream:
         import litellm
 
@@ -147,6 +200,10 @@ class LiteLLM:
             if model == "deepseek/deepseek-flash":
                 # Use the provider's direct-answer mode for this model.
                 options["thinking"] = {"type": "disabled"}
+            if tools:
+                options["tools"] = tools
+            calls = {}
+            completed = False
             chunks = []
             parts: list[str] = []
             try:
@@ -164,10 +221,29 @@ class LiteLLM:
                         choice = chunk.choices[0]
                         if choice.finish_reason == "length":
                             result.truncated = True
+                        for position, fragment in enumerate(choice.delta.tool_calls or []):
+                            index = fragment.index if fragment.index is not None else position
+                            call = calls.setdefault(index, {
+                                "id": f"call_{index}", "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            })
+                            if fragment.id:
+                                call["id"] = fragment.id
+                            if function := fragment.function:
+                                if function.name and function.name != call["function"]["name"]:
+                                    call["function"]["name"] += function.name
+                                if function.arguments:
+                                    arguments = function.arguments
+                                    call["function"]["arguments"] += (
+                                        arguments if isinstance(arguments, str) else json.dumps(arguments)
+                                    )
                         if delta := choice.delta.content:
                             parts.append(delta)
                             yield delta
-                self.record_check(model, bool("".join(parts).strip()))
+                if tools:
+                    result.tool_calls = [calls[index] for index in sorted(calls)]
+                self.record_check(model, bool("".join(parts).strip() or result.tool_calls))
+                completed = True
             except Exception:
                 self.record_check(model, False)
                 raise
@@ -180,32 +256,39 @@ class LiteLLM:
                         tokens_in = sum(len(message["content"]) for message in messages)
                         tokens_out = len(output)
                         cost = None
-                        try:
-                            complete = litellm.stream_chunk_builder(chunks, messages=messages)
-                            usage = getattr(complete, "usage", None)
-                            prompt_tokens = getattr(usage, "prompt_tokens", None)
-                            completion_tokens = getattr(usage, "completion_tokens", None)
-                            tokens_in = (
-                                prompt_tokens if prompt_tokens is not None
-                                else litellm.token_counter(model=model, messages=messages)
-                            )
-                            tokens_out = (
-                                completion_tokens if completion_tokens is not None
-                                else litellm.token_counter(model=model, text=output)
-                            )
-                            if usage is None:
-                                usd = litellm.completion_cost(
-                                    model=model, messages=messages, completion=output,
+                        # LiteLLM can synthesize usage when assembling chunks, so check the wire data.
+                        reported_usage = any(
+                            getattr(getattr(chunk, "usage", None), "prompt_tokens", None) is not None
+                            and getattr(getattr(chunk, "usage", None), "completion_tokens", None) is not None
+                            for chunk in chunks
+                        )
+                        if reported_usage or not completed:
+                            try:
+                                complete = litellm.stream_chunk_builder(chunks, messages=messages)
+                                usage = getattr(complete, "usage", None)
+                                prompt_tokens = getattr(usage, "prompt_tokens", None)
+                                completion_tokens = getattr(usage, "completion_tokens", None)
+                                tokens_in = (
+                                    prompt_tokens if prompt_tokens is not None
+                                    else litellm.token_counter(model=model, messages=messages)
                                 )
-                            else:
-                                usd = litellm.completion_cost(model=model, completion_response=complete)
-                            cost = (Decimal(str(usd)) * self.usd_cny_rate).quantize(
-                                Decimal("0.0001"), rounding=ROUND_HALF_UP,
-                            )
-                        except Exception:
-                            # Keep the best available counts without masking a stream error.
-                            pass
-                        result.usage = Usage(tokens_in, tokens_out, cost)
+                                tokens_out = (
+                                    completion_tokens if completion_tokens is not None
+                                    else litellm.token_counter(model=model, text=output)
+                                )
+                                if usage is None:
+                                    usd = litellm.completion_cost(
+                                        model=model, messages=messages, completion=output,
+                                    )
+                                else:
+                                    usd = litellm.completion_cost(model=model, completion_response=complete)
+                                cost = (Decimal(str(usd)) * self.usd_cny_rate).quantize(
+                                    Decimal("0.0001"), rounding=ROUND_HALF_UP,
+                                )
+                            except Exception:
+                                # Keep the best available counts without masking a stream error.
+                                pass
+                            result.usage = Usage(tokens_in, tokens_out, cost)
 
         return ChatStream(iterate)
 
@@ -214,20 +297,36 @@ class FakeLLM:
     def __init__(
         self, replies: Mapping[str, str] | None = None,
         *, cost_cny: Decimal = Decimal("0.0123"), delay: float = 0, thinking_tokens: int = 0,
+        tool_script: Callable | None = None,
     ) -> None:
         self.replies = dict(replies or {})
         self.cost_cny = cost_cny
         self.delay = delay
         self.thinking_tokens = thinking_tokens
+        self.tool_script = tool_script
+
+    @staticmethod
+    def supports_tools(model):
+        return True
 
     def cheapest(self, members, messages):
         return next(iter(members), None)
 
+    def estimate_usage(self, model, messages, content, calls, tools):
+        from .context import estimate_tokens
+
+        request = list(messages)
+        if tools:
+            request.append({"content": json.dumps(tools, ensure_ascii=False)})
+        output = content + (json.dumps(calls, ensure_ascii=False) if calls else "")
+        return Usage(estimate_tokens(request), estimate_tokens([{"content": output}]), self.cost_cny)
+
     async def stream_chat(
         self, model: str, messages: list[ChatMessage], temperature: float,
-        max_tokens: int | None,
+        max_tokens: int | None, *, tools: list[dict] | None = None,
     ) -> ChatStream:
-        reply = self.replies.get(model)
+        scripted = self.tool_script(model, messages, tools) if self.tool_script else None
+        reply, calls = scripted if scripted is not None else (self.replies.get(model), [])
         if reply is None:
             request = messages[-1]["content"] if messages else ""
             speaker = re.match(r"现在轮到你（(.+?)），本轮要求：", request)
@@ -278,6 +377,7 @@ class FakeLLM:
                     emitted += 1
                     yield character
                 result.truncated = truncated
+                result.tool_calls = calls if tools else []
             finally:
                 thinking = self.thinking_tokens if max_tokens is None else min(self.thinking_tokens, max_tokens)
                 result.usage = Usage(sum(len(m["content"]) for m in messages), thinking + emitted, self.cost_cny)

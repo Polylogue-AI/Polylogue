@@ -4,6 +4,7 @@ import type { Pending } from '../state/roomReducer'
 import { Avatar } from './Avatar'
 import { Icon } from './Icon'
 import { MarkdownText, MessageItem } from './MessageItem'
+import { RunCard } from './RunCard'
 
 interface ViewProps {
   room: Room
@@ -114,18 +115,24 @@ export function PipeView({ room, messages, state, pending }: ViewProps) {
 /* ---------------- 交叉验证 ---------------- */
 export function CrossView({ room, messages, state, pending }: ViewProps) {
   const allAnswers = messages.filter((m) => m.meta.phase === 'answer')
-  // 并发阶段被打断的回答会重新生成（契约 3.4），每位回答者只显示最新一份
-  const latest = new Map<string, Message>()
-  const redone = new Map<string, number>()
+  // 一次回答可能由几段组成：文字 → 运行代码 → 文字（契约 4.4）。
+  // 并发阶段被打断的回答会重新生成（契约 3.4），每位回答者只显示最近一次尝试的所有片段。
+  const byAuthor = new Map<string, Message[]>()
   for (const m of allAnswers) {
     const key = m.author_id ?? m.id
-    if (latest.has(key)) redone.set(key, (redone.get(key) ?? 0) + 1)
-    latest.set(key, m)
+    byAuthor.set(key, [...(byAuthor.get(key) ?? []), m])
   }
   const fallback = (i: number) => `回答 ${String.fromCharCode(65 + i)}`
-  const answers = [...latest.values()]
-    .map((m, i) => ({ m, label: m.meta.anon_label ?? fallback(i) }))
-    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }))
+  const answers = [...byAuthor.entries()].map(([key, list], i) => {
+    const cuts = list.map((m, j) => (m.interrupted && !m.streaming ? j : -1)).filter((j) => j >= 0)
+    const lastCut = cuts[cuts.length - 1] ?? -1
+    // 最后一段就是被打断的：这次尝试还没重做，显示它；否则显示最后一次打断之后的重做结果
+    const from = lastCut === list.length - 1 ? (cuts[cuts.length - 2] ?? -1) + 1 : lastCut + 1
+    const parts = list.slice(from)
+    const m = parts[parts.length - 1]
+    const redone = from > 0
+    return { key, parts, m, redone, label: list.find((x) => x.meta.anon_label)?.meta.anon_label ?? fallback(i) }
+  }).sort((a, b) => a.label.localeCompare(b.label, 'zh-CN', { numeric: true }))
   const reviews = messages.filter((m) => m.meta.phase === 'review')
   const verdict = messages.find((m) => m.kind === 'verdict')
   const others = messages.filter((m) => !m.meta.phase && m.kind !== 'verdict')
@@ -136,15 +143,16 @@ export function CrossView({ room, messages, state, pending }: ViewProps) {
       <div className="cv-q">{room.topic}</div>
       {answers.length > 0 && (
         <div className="cv-grid">
-          {answers.map(({ m, label }) => {
+          {answers.map(({ key, parts, m, redone, label }) => {
             const s = room.seats.find((x) => x.id === m.author_id)
-            const times = redone.get(m.author_id ?? m.id)
             return (
-              <div className="cv-card" key={m.id}>
+              <div className="cv-card" key={key}>
                 <div className="h">{s && <Avatar {...s} size="sm" />}<b>{s?.name}</b><span className="faint" style={{ marginLeft: 'auto', fontSize: 12 }}>{label}</span></div>
-                <MarkdownText text={m.content} />{m.streaming && <span className="caret" />}
+                {parts.map((x) => x.kind === 'run' && x.meta.run
+                  ? <RunCard key={x.id} bare run={x.meta.run} authorId={x.author_id} seats={room.seats} interrupted={false} streaming={x.streaming} cost={x.cost_cny} />
+                  : <div key={x.id}><MarkdownText text={x.content} source={x.streaming ? undefined : { authorId: x.author_id, authorName: s?.name ?? '', messageId: x.id }} />{x.streaming && <span className="caret" />}</div>)}
                 {m.interrupted && !m.streaming && <div className="interrupted" style={{ fontSize: 12, color: 'var(--warn)' }}>（被打断，继续后会重新生成）</div>}
-                {times && !m.interrupted && <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>被打断后重新生成</div>}
+                {redone && !m.interrupted && <div className="faint" style={{ fontSize: 11.5, marginTop: 6 }}>被打断后重新生成</div>}
               </div>
             )
           })}

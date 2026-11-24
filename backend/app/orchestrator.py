@@ -1,13 +1,16 @@
 import asyncio
+import json
 import logging
 from collections import defaultdict
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .context import compression_prompt, estimate_tokens
-from .llm import Usage, model_error_detail
+from .llm import Usage, model_error_detail, supports_tools
 from .modes.base import StructuredReply, Turn, build_prompt
 from .modes.roundtable import ModelCallError, Speech
+from .sandbox import TOOL, result as run_result
+from .schemas import RunInput
 
 logger = logging.getLogger(__name__)
 
@@ -20,24 +23,33 @@ class Output:
     parts: list[str] = field(default_factory=list)
     usage: Usage | None = None
     truncated: bool = False
+    tool_calls: list[dict] = field(default_factory=list)
 
     @property
     def content(self):
         return "".join(self.parts)
 
 
-async def stream_turn(llm, turn, prompt, output, on_delta=None, *, max_tokens=None):
+async def stream_turn(llm, turn, prompt, output, on_delta=None, *, max_tokens=None, tools=None):
     member = turn.member
     if max_tokens is None:
         max_tokens = STRUCTURED_TOKEN_LIMIT if turn.parse is not None else SPEECH_TOKEN_LIMIT
-    stream = await llm.stream_chat(member.model, prompt, member.temperature, max_tokens)
+    options = {"tools": tools} if tools else {}
+    stream = await llm.stream_chat(member.model, prompt, member.temperature, max_tokens, **options)
     labels = (member.name, f"{member.name}（{member.role}）", f"{member.name} ({member.role})")
     prefixes = tuple(f"[{label}]{colon}" for label in labels for colon in ("：", ":")) if turn.parse is None else ()
     pending = ""
     after_prefix = False
 
+    leading = ""
+
     def emit(delta):
+        nonlocal leading
+        if not output.parts and not delta.strip():
+            leading += delta
+            return
         if delta:
+            delta, leading = leading + delta, ""
             output.parts.append(delta)
             if on_delta:
                 on_delta(delta)
@@ -66,11 +78,25 @@ async def stream_turn(llm, turn, prompt, output, on_delta=None, *, max_tokens=No
     finally:
         output.usage = stream.usage
         output.truncated = stream.truncated
+        output.tool_calls = stream.tool_calls
         emit(pending)
     if output.truncated:
         logger.warning("模型 %s 达到输出上限（%s tokens），发言可能不完整。", member.model, max_tokens)
-    if not output.content.strip() or output.usage is None:
-        raise RuntimeError("模型返回了空的流式响应")
+    if not output.content.strip() and not output.tool_calls:
+        raise RuntimeError("模型流式响应缺少正文和工具调用")
+    if output.usage is None:
+        logger.warning("模型 %s 的流式响应缺少用量数据，按已有响应估算。", member.model)
+        estimator = getattr(llm, "estimate_usage", None)
+        if estimator is not None:
+            try:
+                output.usage = await asyncio.to_thread(
+                    estimator, member.model, prompt, output.content, output.tool_calls, tools,
+                )
+            except Exception:
+                logger.warning("模型 %s 的用量估算失败，改用文本长度估算。", member.model)
+        if output.usage is None:
+            text = output.content + (json.dumps(output.tool_calls, ensure_ascii=False) if output.tool_calls else "")
+            output.usage = Usage(estimate_tokens(prompt), estimate_tokens([{"content": text}]), None)
 
 
 async def discuss(mode, topic, llm):
@@ -94,6 +120,10 @@ class BudgetStop(Exception):
     pass
 
 
+class FollowupFailed(Exception):
+    pass
+
+
 class RoomFlow:
     def __init__(self, room):
         self.room = room
@@ -111,7 +141,9 @@ class RoomFlow:
     def prompt(self, turn, pending, *, history=None):
         room = self.room
         if turn.private_history is not None:
-            history, summary = turn.private_history, ""
+            history = (*turn.private_history, *room.history(human_runs_only=True))
+            turn = replace(turn, private_history=history)
+            summary = ""
         else:
             summary = room.context_summary()
         if history is None:
@@ -169,6 +201,104 @@ class RoomFlow:
                 return
             room.update(summary=result.content, summarized_until_round=number)
 
+    async def allows_tools(self, turn):
+        room = self.room
+        if (not room.sandbox or not room.sandbox.enabled or turn.parse is not None or turn.kind != "chat"
+                or not (turn.allow_tools or room.record["mode"] == "round") or not turn.member.can_run_code):
+            return False
+        await room.sandbox.refresh()
+        return room.sandbox.available and await asyncio.to_thread(
+            supports_tools, room.llm, turn.member.model, room.tool_models,
+        )
+
+    async def tool_turn(self, turn, prompt, max_tokens):
+        room = self.room
+        member = turn.member
+        sandbox = room.sandbox
+        prompt[0]["content"] += (
+            "\n你可以用 run_code 运行 Python、Node.js 或 HTML。运行环境没有网络，不能安装依赖，"
+            f"单次限时 {sandbox.timeout} 秒。写完代码先运行验证，再给出结论；不要编造运行结果。"
+        )
+        runs = []
+        texts = []
+        used = 0
+        while True:
+            final = used >= sandbox.turn_limit
+            if final:
+                prompt.append({"role": "user", "content": "运行次数已用完，请根据已有结果给出最终回答。"})
+            tools = [TOOL] if not final and sandbox.available else None
+            if not final and tools is None:
+                prompt.append({"role": "user", "content": f"运行环境不可用：{sandbox.reason}。请用文字回答。"})
+            for attempt in range(2 if used else 1):
+                self.check_budget()
+                message = None
+                output = Output()
+
+                def emit(delta):
+                    nonlocal message
+                    if message is None:
+                        message = room.begin_message(turn)
+                    room.delta(message, delta)
+
+                try:
+                    await stream_turn(room.llm, turn, prompt, output, emit, max_tokens=max_tokens, tools=tools)
+                except asyncio.CancelledError:
+                    room.end_message(member.id, message, output, interrupted=True)
+                    raise
+                except Exception as exc:
+                    room.end_message(member.id, message, output, interrupted=True)
+                    if not used:
+                        raise
+                    if attempt == 1:
+                        raise FollowupFailed(model_error_detail(exc)) from exc
+                else:
+                    break
+
+            if message is not None or not output.tool_calls:
+                room.end_message(member.id, message, output, interrupted=output.truncated)
+            if output.content:
+                texts.append(output.content)
+            if not output.tool_calls:
+                return StructuredReply("\n\n".join(texts), runs=tuple(runs))
+
+            transcript = {"role": "assistant", "content": output.content, "tool_calls": []}
+            prompt.append(transcript)
+            charge = output.usage if message is None else None
+            try:
+                for call in output.tool_calls:
+                    function = call["function"]
+                    try:
+                        args = json.loads(function["arguments"])
+                        if not isinstance(args, dict):
+                            raise ValueError
+                    except (ValueError, TypeError, RecursionError):
+                        args = None
+                    transcript["tool_calls"].append(dict(call, function={
+                        "name": function["name"] or "run_code",
+                        "arguments": function["arguments"] if args is not None else "{}",
+                    }))
+                    if used >= sandbox.turn_limit:
+                        outcome = run_result("error", stderr="运行次数已用完")
+                    else:
+                        used += 1
+                        if function["name"] != "run_code" or args is None:
+                            outcome = run_result("error", stderr="run_code 参数不是有效的 JSON 对象或工具名无效")
+                        else:
+                            try:
+                                request = RunInput.model_validate(args)
+                            except ValueError:
+                                outcome = run_result("error", stderr="run_code 参数无效，请检查 language、files 和 test")
+                            else:
+                                usage, charge = charge, None
+                                outcome, content = await room.run_code(member.id, request, turn=turn, usage=usage)
+                                runs.append(("", f"{member.name} 运行了代码", content))
+                    prompt.append({"role": "tool", "tool_call_id": call["id"],
+                                   "content": json.dumps({key: value for key, value in outcome.items()
+                                                          if key != "truncated"}, ensure_ascii=False)})
+            finally:
+                if charge is not None:
+                    room.end_message(member.id, None, Output(usage=charge))
+
     async def call(self, turn, make_prompt, *, visible=True, max_tokens=None, restart_on_interrupt=False):
         room = self.room
         member_id = turn.member.id
@@ -187,14 +317,22 @@ class RoomFlow:
                     message = room.begin_message(turn)
                 room.delta(message, delta)
 
-            task = asyncio.create_task(stream_turn(
-                room.llm, turn, make_prompt(), output, emit if visible and turn.parse is None else None,
-                max_tokens=max_tokens,
-            ))
+            prompt = make_prompt()
+
+            async def model_turn():
+                if visible and await self.allows_tools(turn):
+                    return await self.tool_turn(turn, prompt, max_tokens)
+                await stream_turn(
+                    room.llm, turn, prompt, output, emit if visible and turn.parse is None else None,
+                    max_tokens=max_tokens,
+                )
+                return None
+
+            task = asyncio.create_task(model_turn())
             room.track(task, member_id if visible else None)
             try:
-                await task
-                result = turn.parse(output.content) if turn.parse else StructuredReply(output.content)
+                reply = await task
+                result = reply if reply is not None else (turn.parse(output.content) if turn.parse else StructuredReply(output.content))
             except asyncio.CancelledError:
                 if visible and message is None and output.content:
                     emit(output.content)
@@ -205,9 +343,12 @@ class RoomFlow:
                 if reason == "interrupt" and restart_on_interrupt:
                     continue
                 return None
+            except BudgetStop as exc:
+                self.blocked_reason = str(exc)
+                return None
             except Exception as exc:
                 room.end_message(member_id, message, output, interrupted=True)
-                failures += 1
+                failures = 2 if isinstance(exc, FollowupFailed) else failures + 1
                 logger.warning(
                     "房间 %s 成员 %s 模型 %s 任务 %s 第 %s 次调用失败（%s）：%s",
                     room.id, member_id, turn.member.model, turn.meta.get("task_id", "-"), failures,

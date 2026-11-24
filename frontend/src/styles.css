@@ -503,3 +503,49 @@ details.reviews .rv{display:flex;gap:10px;margin-top:12px;font-size:13px}
 a.nav-item,a.icon-btn{text-decoration:none}
 .task .t-top{white-space:nowrap;min-width:0}
 .task .st{white-space:nowrap}
+
+/* 代码块工具条与运行预览 */
+.code-block{margin-top:8px;border-radius:10px;background:#F6F6F8;overflow:hidden}
+.code-block pre{margin-top:0;border-radius:0;padding-top:4px}
+.code-bar{display:flex;align-items:center;gap:4px;padding:5px 6px 0 12px;font-size:11.5px;color:var(--ink-3)}
+.code-lang{flex:1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;text-transform:lowercase}
+.code-btn{height:24px;padding:0 10px;border-radius:999px;font-size:12px;color:var(--ink-2)}
+.code-btn:hover{background:rgba(26,26,28,.07);color:var(--ink)}
+.code-btn.run{background:var(--ink);color:#fff}
+.code-btn.run:hover{background:#38383C;color:#fff}
+.sheet.runner{width:min(1100px,100%)}
+.runner-body{padding:16px 28px 12px}
+.runner-frame{display:block;width:100%;height:min(58vh,620px);border:1px solid var(--hair);border-radius:12px;background:#fff}
+.runner-console{margin-top:10px;max-height:150px;overflow:auto;border:1px solid var(--hair);border-radius:10px;padding:6px 10px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;background:#FAFAFB}
+.runner-console-head{font-family:inherit;color:var(--ink-2);font-weight:600;padding-bottom:2px}
+.runner-log{white-space:pre-wrap;word-break:break-all;border-top:1px dashed var(--hair);padding:2px 0}
+.runner-log.error{color:var(--bad)}
+.runner-log.warn{color:#A86A00}
+.runner-foot{gap:12px;flex-wrap:wrap}
+.code-block pre{max-height:420px;font-size:12.5px;line-height:1.5}
+.toggle:disabled{opacity:.4;cursor:not-allowed}
+
+/* 代码运行卡片（契约第 4 节） */
+.run-card{margin-top:4px;border:1px solid var(--hair);border-radius:12px;background:#FAFAFB;overflow:hidden;font-size:13px}
+.cv-card .run-card{margin:8px 0}
+.run-head{display:flex;align-items:center;gap:8px;padding:8px 12px;flex-wrap:wrap}
+.run-lang{font-weight:600;font-size:12px;padding:1px 8px;border-radius:999px;background:var(--fill)}
+.run-entry{font-size:12px;color:var(--ink-2);background:none;padding:0}
+.run-status{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+.run-status.ok{color:var(--ok)}
+.run-status.bad{color:var(--bad)}
+.run-status.mute{color:var(--ink-3)}
+.run-status.run{color:var(--ink-2)}
+.run-spin{width:10px;height:10px;border-radius:50%;border:2px solid var(--hair);border-top-color:var(--ink-2);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.run-time{font-size:12px;color:var(--ink-3)}
+.run-code{border-top:1px solid var(--hair);padding:6px 12px}
+.run-code summary{cursor:pointer;font-size:12px;color:var(--ink-2)}
+.run-code pre,.run-out pre{margin:4px 0 6px;padding:8px 10px;border-radius:8px;background:#F1F1F4;overflow:auto;max-height:320px;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+.run-file{font:11.5px ui-monospace,SFMono-Regular,Consolas,monospace;color:var(--ink-3);margin-top:6px}
+.run-out{border-top:1px solid var(--hair);padding:6px 12px}
+.run-out.faint{font-size:12px}
+.run-out-title{font-size:11.5px;color:var(--ink-3);font-weight:600}
+.run-out pre.bad{color:var(--bad);background:#FCEFEE}
+.run-note{padding:0 12px 6px;font-size:11.5px}
+.run-actions{border-top:1px solid var(--hair);padding:6px 12px;display:flex;justify-content:flex-end}
