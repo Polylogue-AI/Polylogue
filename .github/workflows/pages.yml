@@ -34,7 +34,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_MOCK: '1'
-      # 单页应用：直接打开 /polylogue/rooms/xxx 时由 404.html 接管
+      # 单页应用：直接打开 /<仓库名>/rooms/xxx 时由 404.html 接管
       - run: cp frontend/dist/index.html frontend/dist/404.html
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -6,7 +6,7 @@ A self-hosted room where several AI models and a few friends think and build tog
 
 Polylogue puts models from different providers (Claude, GPT, DeepSeek, Gemini, Qwen, local Ollama models and anything else [LiteLLM](https://github.com/BerriAI/litellm) supports) at the same table as the people in your team. They take turns, review each other, argue, and can run code to check their own answers.
 
-**[Try the live demo →](https://polylogue-ai.github.io/polylogue/)** (runs entirely in your browser with a mock backend; no API key needed. Enter any 6-character invite code; use the name `林` to log in as the admin.)
+**[Try the live demo →](https://polylogue-ai.github.io/Polylogue/)** (runs entirely in your browser with a mock backend; no API key needed. Enter any 6-character invite code; use the name `林` to log in as the admin.)
 
 ![Roundtable discussion](docs/images/roundtable.png)
 

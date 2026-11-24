@@ -6,7 +6,7 @@
 
 Polylogue 让不同厂商的模型和你的团队坐在一张桌子旁：Claude、GPT、DeepSeek、Gemini、通义千问、本地的 Ollama 模型，以及 [LiteLLM](https://github.com/BerriAI/litellm) 支持的任何模型。它们轮流发言、互相审查、辩论，还能运行代码验证自己的答案。
 
-**[在线体验 →](https://polylogue-ai.github.io/polylogue/)**：全部在浏览器里运行，使用模拟后端，不需要 API Key。输入任意 6 位邀请码，名字填"林"即为管理员。
+**[在线体验 →](https://polylogue-ai.github.io/Polylogue/)**：全部在浏览器里运行，使用模拟后端，不需要 API Key。输入任意 6 位邀请码，名字填"林"即为管理员。
 
 ![圆桌讨论](docs/images/roundtable.png)
 
