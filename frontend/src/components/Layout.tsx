@@ -20,7 +20,7 @@ export function Layout() {
   return (
     <div className="app">
       <aside className={`sidebar ${open ? 'open' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('a,button')) setOpen(false) }}>
-        <div className="brand"><BrandMark /><b>Roundtable</b></div>
+        <div className="brand"><BrandMark /><b>Polylogue</b></div>
         <NavLink className="nav-item" to="/rooms" end aria-current={loc.pathname === '/rooms' ? 'page' : undefined}>
           <Icon name="rooms" size={17} />房间<span className="count">{rooms.length}</span>
         </NavLink>

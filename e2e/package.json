@@ -1,0 +1,8 @@
+{
+  "name": "polylogue-e2e",
+  "private": true,
+  "description": "Polylogue 端到端测试脚本（playwright-core + 本机 Chrome）",
+  "dependencies": {
+    "playwright-core": "^1.65.1"
+  }
+}

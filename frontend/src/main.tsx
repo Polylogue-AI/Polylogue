@@ -21,7 +21,8 @@ function RequireAuth({ children }: { children: ReactNode }) {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
+    {/* 部署在子路径（如 GitHub Pages 的 /polylogue/）时，路由要带上这个前缀 */}
+    <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/+$/, '') || '/'}>
       <ToastProvider>
         <SessionProvider>
           <Routes>

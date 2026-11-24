@@ -78,7 +78,7 @@ export function LoginPage() {
       <form className="login-form" onSubmit={submit}>
         <BrandMark size={44} />
         <div>
-          <h1>Roundtable</h1>
+          <h1>Polylogue</h1>
           <p className="lede" style={{ marginTop: 12 }}>让几个模型和你的朋友坐在同一张桌子旁，一起把事情想清楚。</p>
         </div>
         <div className="field">

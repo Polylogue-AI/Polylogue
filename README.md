@@ -1,27 +1,89 @@
-# AI Roundtable
+# Polylogue
 
-几个模型和几个朋友坐在同一张桌子旁，用圆桌讨论、分工流水线、交叉验证、辩论四种方式一起把事情想清楚。私用，2–10 人。
+**English** | [简体中文](README.zh-CN.md)
 
-## 目录
+A self-hosted room where several AI models and a few friends think and build together.
 
-| 路径 | 内容 | 负责 |
-|---|---|---|
-| `docs/01-界面方案评估.md` | 对原 HTML 原型的评估 | Claude |
-| `docs/02-分工与协作流程.md` | 谁做什么、怎么交接 | — |
-| `docs/03-接口契约.md` | 前后端唯一的约定 | Claude 起草，双方遵守 |
-| `docs/04-给ChatGPT的任务书.md` | 发给 ChatGPT 的后端任务 | — |
-| `frontend/` | React + Vite + TypeScript 前端，自带模拟后端 | Claude |
-| `backend/` | FastAPI + LiteLLM 后端（待交付） | ChatGPT |
-| `prompts/` | 角色提示词模板 | 共同 |
+Polylogue puts models from different providers (Claude, GPT, DeepSeek, Gemini, Qwen, local Ollama models and anything else [LiteLLM](https://github.com/BerriAI/litellm) supports) at the same table as the people in your team. They take turns, review each other, argue, and can run code to check their own answers.
 
-## 运行前端
+**[Try the live demo →](https://polylogue-ai.github.io/polylogue/)** (runs entirely in your browser with a mock backend; no API key needed. Enter any 6-character invite code; use the name `林` to log in as the admin.)
+
+![Roundtable discussion](docs/images/roundtable.png)
+
+## Features
+
+- **Four ways to collaborate**
+  - **Roundtable**: members speak in turns for several rounds, then one summarizes.
+  - **Pipeline**: a planner splits the work, executors do it, a reviewer approves or sends it back, the planner merges.
+  - **Cross-check**: the same question goes to several models in parallel; they review each other anonymously and a judge reports agreements and disagreements.
+  - **Debate**: pro and con argue; a judge scores every round and gives a verdict.
+- **Humans in the loop**: streaming output, interject at any time, @-mention a model to make it speak next, pause / interrupt / skip, steer the whole discussion.
+- **Code execution**
+  - Run HTML/JS from any message in a sandboxed iframe right in the browser.
+  - With Docker enabled, models can call a `run_code` tool to run Python, Node.js or web pages (headless Chromium + Playwright tests) in a disposable, network-less container, then continue based on the result.
+- **Cost control**: per-room budgets, per-person monthly limits, usage dashboard, cost estimates in CNY.
+- **Small-team friendly**: invite-code login, roles and system prompts per model, automatic context compression for long discussions, reconnect without losing messages.
+
+| Cross-check | Code execution |
+|---|---|
+| ![Cross-check](docs/images/crosscheck.png) | ![Code execution](docs/images/code-run.png) |
+
+## Quick start
+
+**Just the UI** (mock backend, no keys):
 
 ```bash
 cd frontend
 npm install
-npm run dev          # http://localhost:5173
+echo "VITE_MOCK=1" > .env
+npm run dev                    # http://localhost:5173
 ```
 
-`frontend/.env` 里 `VITE_MOCK=1` 时使用浏览器内的模拟后端，不需要启动 backend：任意 6 位邀请码都能进，名字填"林"即为管理员。模拟数据存在内存里，刷新页面会重置。
+**With the real backend** (Python 3.12+):
 
-后端就绪后改成 `VITE_MOCK=0`，Vite 会把 `/api` 和 `/ws` 代理到 `http://localhost:8000`。
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -e ".[test]"
+cp .env.example .env           # starts in fake-model mode (no keys needed, admin invite code TABLE2)
+# for real models: add your API keys, set LLM_MODE=real and change ADMIN_INVITE_CODE
+python -m uvicorn app.main:app --port 8000
+
+cd ../frontend
+echo "VITE_MOCK=0" > .env      # proxies /api and /ws to localhost:8000
+npm run dev
+```
+
+**Code execution** (optional, needs Docker):
+
+```bash
+docker build -t roundtable-sandbox backend/sandbox
+# then set SANDBOX_ENABLED=1 in backend/.env and restart the backend
+```
+
+See [`backend/README.md`](backend/README.md) for all configuration options and [`SECURITY.md`](SECURITY.md) before exposing it to the internet.
+
+## Project status
+
+The core features work and have been tested with real models (Claude, GPT, DeepSeek). Production deployment config (docker-compose, reverse proxy, HTTPS guide) is not done yet.
+
+Next up: **connecting agents across machines**, so two people can use each other's local coding agents (Claude Code, Codex, Gemini CLI) with shared context and files. See [`docs/13-联通需求说明.md`](docs/13-联通需求说明.md).
+
+## How it was built
+
+Polylogue was built by AI models working together: Claude wrote the frontend and the interface contract, ChatGPT wrote the backend, and each reviewed the other's work. The task briefs, reviews and real-model test transcripts are kept in [`docs/`](docs/README.md). The single source of truth between frontend and backend is the [interface contract](docs/03-接口契约.md).
+
+Documentation is currently in Chinese.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). If you use an AI coding assistant, point it at [`AGENTS.md`](AGENTS.md) first.
+
+## Authors
+
+- **Eutopia** ([@Eutopia-Nan](https://github.com/Eutopia-Nan))
+- **Aaron**
+
+## License
+
+[Apache License 2.0](LICENSE). Copyright 2026 Eutopia and Aaron.

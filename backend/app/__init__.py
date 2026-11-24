@@ -1,1 +1,1 @@
-"""AI Roundtable backend."""
+"""Polylogue backend."""

@@ -60,7 +60,7 @@ def create_app(settings: Settings | None = None, llm=None, sandbox=None):
             await asyncio.gather(*(runtime.stop() for runtime in state.rooms.values()), return_exceptions=True)
             db.close()
 
-    app = FastAPI(title="AI Roundtable", lifespan=lifespan)
+    app = FastAPI(title="Polylogue", lifespan=lifespan)
 
     @app.exception_handler(ApiError)
     async def api_error(_request: Request, exc: ApiError):

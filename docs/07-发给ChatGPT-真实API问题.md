@@ -38,7 +38,7 @@ Claude Haiku 5.5 / Sonnet 5.5 设置非默认温度会返回 400，Opus 5.5 已�
 
 ## 补充：三家真实讨论已跑通，又发现三个问题
 
-OpenAI 也改为经中转站（`OPENAI_BASE_URL=https://api.oproxy.world/v1`，LiteLLM 支持，代码不用改）。该中转站没有 `gpt-5-mini`（请求会返回 503），项目负责人选了 `openai/gpt-6.1-sol`，已写进 `.env`。
+OpenAI 也改为经中转站（`OPENAI_BASE_URL=https://your-openai-relay.example.com/v1`，LiteLLM 支持，代码不用改）。该中转站没有 `gpt-5-mini`（请求会返回 503），项目负责人选了 `openai/gpt-6.1-sol`，已写进 `.env`。
 
 之后 `python -m app.cli "怎么组织一次读书会？"` 完整跑通：三家各发言两轮，DeepSeek 汇总，总费用 ¥0.0531，三家都能正常算出费用。
 

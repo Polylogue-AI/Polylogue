@@ -1,4 +1,4 @@
-# AI Roundtable 后端 · M3
+# Polylogue 后端
 
 使用 Python 3.12 或更高版本，在项目的 `backend/` 目录运行。
 

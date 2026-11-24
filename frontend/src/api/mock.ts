@@ -540,7 +540,7 @@ function seed() {
   }
   // 4. 辩论：第 1 回合已完成，暂停中
   {
-    const { room, duties } = makeRoom({ id: 'r_backend', title: '后端用 FastAPI 还是 Node', topic: 'Roundtable 的后端应该用 Python FastAPI', mode: 'debate', ais: ['ai_gpt', 'ai_deepseek', 'ai_claude'], humans: ['u_lin', 'u_zhe'], rounds: 3, budget: 5, createdBy: 'u_lin' })
+    const { room, duties } = makeRoom({ id: 'r_backend', title: '后端用 FastAPI 还是 Node', topic: 'Polylogue 的后端应该用 Python FastAPI', mode: 'debate', ais: ['ai_gpt', 'ai_deepseek', 'ai_claude'], humans: ['u_lin', 'u_zhe'], rounds: 3, budget: 5, createdBy: 'u_lin' })
     const e = new Engine(room, duties)
     e.fastForward(3)
     e.state.status = 'paused'
